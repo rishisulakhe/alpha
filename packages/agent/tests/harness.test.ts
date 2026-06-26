@@ -335,3 +335,95 @@ describe("AgentHarness — follow-up one_at_a_time vs all", () => {
     expect(roles[idx! + 1]).toBe("user"); // two users adjacent
   });
 });
+
+// === Step 16: Idle steering drain ===
+
+describe("AgentHarness — idle steering drain", () => {
+  test("queued steering messages are drained before the user prompt when idle", async () => {
+    const provider = FakeProvider.singleTextResponse("Response");
+    const harness = new AgentHarness({ provider, model: "fake", system: "" });
+
+    // Queue steering while idle
+    harness.steer("Pre-queued steering");
+    expect(harness.pendingMessageCount).toBe(1);
+
+    const events = await collect(harness.prompt("My prompt"));
+
+    // Messages should contain: steering, user prompt, assistant response
+    expect(harness.messages.length).toBe(3);
+    expect(harness.messages[0]!.role).toBe("user");
+    const m0 = harness.messages[0]!;
+    const m1 = harness.messages[1]!;
+    if (m0.role === "user") expect(m0.content).toBe("Pre-queued steering");
+    if (m1.role === "user") expect(m1.content).toBe("My prompt");
+    expect(harness.pendingMessageCount).toBe(0);
+  });
+
+  test("idle steering drain emits MessageStartEvent/MessageEndEvent pairs", async () => {
+    const provider = FakeProvider.singleTextResponse("Response");
+    const harness = new AgentHarness({ provider, model: "fake", system: "" });
+    harness.steer("Idle steer");
+    const events = await collect(harness.prompt("Hi"));
+
+    // Should have message_start/user + message_end for the idle steering
+    const userStarts = events.filter((e) => e.type === "message_start" && (e as { role: string }).role === "user");
+    expect(userStarts.length).toBe(2); // idle steer + main prompt (emitted at turn_start)
+  });
+});
+
+// === Step 17: Listener system (extended) ===
+
+describe("AgentHarness — listeners (extended)", () => {
+  test("listeners run in subscription order", async () => {
+    const provider = FakeProvider.singleTextResponse("ok");
+    const harness = new AgentHarness({ provider, model: "fake", system: "" });
+    const order: number[] = [];
+    const listener1 = () => { order.push(1); };
+    const listener2 = () => { order.push(2); };
+    harness.subscribe(listener1);
+    harness.subscribe(listener2);
+    await collect(harness.prompt("Hi"));
+    // Each event triggers both listeners: order should be 1,2,1,2,...
+    const idx1 = order.indexOf(1);
+    const idx2 = order.indexOf(2);
+    expect(idx2).toBeGreaterThan(idx1);
+  });
+
+  test("listener error does not crash the harness", async () => {
+    const provider = FakeProvider.singleTextResponse("ok");
+    const harness = new AgentHarness({ provider, model: "fake", system: "" });
+    harness.subscribe(() => { throw new Error("Listener explosion"); });
+    // Should not throw
+    const events = await collect(harness.prompt("Hi"));
+    expect(events.length).toBeGreaterThan(0);
+  });
+
+  test("listener error in async listener caught by _notifyAndAwait at agent_end", async () => {
+    const provider = FakeProvider.singleTextResponse("ok");
+    const harness = new AgentHarness({ provider, model: "fake", system: "" });
+    // Async listener that rejects — will be caught by _notifyAndAwait at agent_end
+    harness.subscribe(async () => {
+      await Promise.resolve();
+      throw new Error("Async explosion");
+    });
+    // Should not throw
+    const events = await collect(harness.prompt("Hi"));
+    expect(events.length).toBeGreaterThan(0);
+  });
+
+  test("agent_end notifies and awaits listeners", async () => {
+    const provider = FakeProvider.singleTextResponse("ok");
+    const harness = new AgentHarness({ provider, model: "fake", system: "" });
+    let agentEndSeen = false;
+    harness.subscribe(async (ev) => {
+      if (ev.type === "agent_end") {
+        await new Promise((r) => setTimeout(r, 10));
+        agentEndSeen = true;
+      }
+    });
+    const events = await collect(harness.prompt("Hi"));
+    expect(events[events.length - 1]!.type).toBe("agent_end");
+    // The agent_end listener should have been awaited and completed
+    expect(agentEndSeen).toBe(true);
+  });
+});

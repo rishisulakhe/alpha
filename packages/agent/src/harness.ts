@@ -54,6 +54,14 @@ export class AgentHarness {
   async *prompt(content: string): AsyncIterable<AgentEvent> {
     this._ensureNotRunning();
     this._repairInterruptedToolResults();
+
+    // Drain idle steering messages before appending the new user message
+    const idleSteering = this._drainAllSteering();
+    for (const msg of idleSteering) {
+      yield { type: "message_start", role: msg.role } satisfies MessageStartEvent;
+      yield { type: "message_end", message: msg } satisfies MessageEndEvent;
+    }
+
     this._isRunning = true;
     const userMessage: AgentMessage = { role: "user", content };
     this._messages.push(userMessage);
@@ -92,6 +100,12 @@ export class AgentHarness {
         queueMode: this._config.queueMode,
       })) {
         this._notify(event);
+
+        // Use await on agent_end so session writes flush before idle state is visible
+        if (event.type === "agent_end") {
+          await this._notifyAndAwait(event);
+        }
+
         yield event;
 
         // Emit pending user message as events when the first turn starts
@@ -191,7 +205,22 @@ export class AgentHarness {
   private _notify(event: AgentEvent): void {
     for (const listener of [...this._listeners]) {
       try {
-        listener(event);
+        const result = listener(event);
+        if (result instanceof Promise) {
+          result.catch(() => {
+            // Listener errors must not break the harness
+          });
+        }
+      } catch {
+        // Listener errors must not break the harness
+      }
+    }
+  }
+
+  private async _notifyAndAwait(event: AgentEvent): Promise<void> {
+    for (const listener of [...this._listeners]) {
+      try {
+        await listener(event);
       } catch {
         // Listener errors must not break the harness
       }
@@ -223,6 +252,13 @@ export class AgentHarness {
     }
     // one_at_a_time
     return [queue.shift()!];
+  }
+
+  private _drainAllSteering(): AgentMessage[] {
+    const drained = [...this._steeringQueue];
+    this._steeringQueue = [];
+    this._messages.push(...drained);
+    return drained;
   }
 
   private _repairInterruptedToolResults(): void {
