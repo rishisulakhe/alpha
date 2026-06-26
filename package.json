@@ -1,0 +1,8 @@
+{
+  "name": "alpha",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ]
+}
+
