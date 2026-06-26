@@ -1,0 +1,37 @@
+{
+  "name": "@alpha/coding",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts",
+    "./session": "./src/session.ts",
+    "./session-manager": "./src/session-manager.ts",
+    "./tools/types": "./src/tools/types.ts",
+    "./tools/read": "./src/tools/read.ts",
+    "./tools/write": "./src/tools/write.ts",
+    "./tools/edit": "./src/tools/edit.ts",
+    "./tools/bash": "./src/tools/bash.ts",
+    "./config/paths": "./src/config/paths.ts",
+    "./config/credentials": "./src/config/credentials.ts",
+    "./config/providers": "./src/config/providers.ts",
+    "./resources/skills": "./src/resources/skills.ts",
+    "./resources/templates": "./src/resources/templates.ts",
+    "./prompt/system": "./src/prompt/system.ts",
+    "./context/discovery": "./src/context/discovery.ts",
+    "./context/tokens": "./src/context/tokens.ts",
+    "./context/compaction": "./src/context/compaction.ts",
+    "./thinking": "./src/thinking.ts",
+    "./rendering": "./src/rendering/index.ts",
+    "./tui": "./src/tui/index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}
