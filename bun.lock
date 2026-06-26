@@ -13,6 +13,7 @@
       "name": "@alpha/agent",
       "version": "0.1.0",
       "dependencies": {
+        "@alpha/ai": "workspace:*",
         "zod": "^4.4.3",
       },
       "devDependencies": {
