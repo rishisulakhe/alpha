@@ -36,6 +36,9 @@
     "packages/coding": {
       "name": "@alpha/coding",
       "version": "0.1.0",
+      "dependencies": {
+        "@alpha/agent": "workspace:*",
+      },
       "devDependencies": {
         "@types/bun": "latest",
         "typescript": "^5",
