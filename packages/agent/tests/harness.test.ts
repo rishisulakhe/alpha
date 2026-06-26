@@ -427,3 +427,158 @@ describe("AgentHarness — listeners (extended)", () => {
     expect(agentEndSeen).toBe(true);
   });
 });
+
+// === Step 18: Transcript repair (extended) ===
+
+describe("AgentHarness — transcript repair (extended)", () => {
+  test("injects repair messages for unresolved tool calls at start of prompt", async () => {
+    const provider = FakeProvider.singleTextResponse("New response");
+    // Pre-seed harness with a transcript that has an unresolved tool call
+    const messages: AgentMessage[] = [
+      { role: "user", content: "Read file" },
+      { role: "assistant", content: "I'll read it.", tool_calls: [
+        { id: "call-1", name: "read", arguments: { path: "file.txt" } },
+      ] },
+    ];
+    const harness = new AgentHarness({ provider, model: "fake", system: "" }, messages);
+
+    await collect(harness.prompt("What happened?"));
+
+    // Should have: user+assistant(tool_1)+repair(tool_1)+user(prompt)+assistant(response)
+    expect(harness.messages.length).toBe(5);
+    const m0 = harness.messages[0]!;
+    expect(m0.role).toBe("user");
+    if (m0.role === "user") expect(m0.content).toBe("Read file");
+    expect(harness.messages[1]!.role).toBe("assistant");
+    // The repair message should be at index 2
+    const repair = harness.messages[2]!;
+    expect(repair.role).toBe("tool");
+    if (repair.role === "tool") {
+      expect(repair.tool_call_id).toBe("call-1");
+      expect(repair.ok).toBe(false);
+      expect(repair.error).toContain("interrupted");
+    }
+    // New user prompt should follow repair
+    const newPrompt = harness.messages[3]!;
+    expect(newPrompt.role).toBe("user");
+    if (newPrompt.role === "user") expect(newPrompt.content).toBe("What happened?");
+  });
+
+  test("does not add duplicate repair if tool result already exists", async () => {
+    const provider = FakeProvider.singleTextResponse("Response");
+    // Pre-seed with a resolved tool call (tool result present)
+    const messages: AgentMessage[] = [
+      { role: "user", content: "Read file" },
+      { role: "assistant", content: "I'll read it.", tool_calls: [
+        { id: "call-1", name: "read", arguments: { path: "file.txt" } },
+      ] },
+      { role: "tool", tool_call_id: "call-1", name: "read", content: "file contents", ok: true, data: null, details: null, error: null },
+    ];
+    const harness = new AgentHarness({ provider, model: "fake", system: "" }, messages);
+
+    await collect(harness.prompt("Next"));
+
+    // Should have: user+assistant+tool_result+user(prompt)+assistant(response) = 5
+    expect(harness.messages.length).toBe(5);
+    // No extra repair — the existing tool result should remain
+    const tool = harness.messages[2]!;
+    expect(tool.role).toBe("tool");
+    if (tool.role === "tool") {
+      expect(tool.content).toBe("file contents");
+      expect(tool.ok).toBe(true);
+    }
+  });
+
+  test("repairs multiple unresolved tool calls from a single assistant message", async () => {
+    const provider = FakeProvider.singleTextResponse("Response");
+    const messages: AgentMessage[] = [
+      { role: "user", content: "Do stuff" },
+      { role: "assistant", content: "I'll do it.", tool_calls: [
+        { id: "c1", name: "read", arguments: {} },
+        { id: "c2", name: "write", arguments: {} },
+        { id: "c3", name: "read", arguments: {} },
+      ] },
+    ];
+    const harness = new AgentHarness({ provider, model: "fake", system: "" }, messages);
+
+    await collect(harness.prompt("Next"));
+
+    // Should have: user+asst(tool_calls×3)+repair(c1)+repair(c2)+repair(c3)+user(prompt)+asst(response) = 7
+    expect(harness.messages.length).toBe(7);
+    const r0 = harness.messages[2]!;
+    const r1 = harness.messages[3]!;
+    const r2 = harness.messages[4]!;
+    expect(r0.role).toBe("tool");
+    expect(r1.role).toBe("tool");
+    expect(r2.role).toBe("tool");
+    if (r0.role === "tool") expect(r0.tool_call_id).toBe("c1");
+    if (r1.role === "tool") expect(r1.tool_call_id).toBe("c2");
+    if (r2.role === "tool") expect(r2.tool_call_id).toBe("c3");
+  });
+
+  test("only repairs the latest assistant with unresolved tool calls", async () => {
+    const provider = FakeProvider.singleTextResponse("Response");
+    // Assistant(tool:c1) has a result, Assistant(tool:c2) does not
+    const messages: AgentMessage[] = [
+      { role: "user", content: "Start" },
+      { role: "assistant", content: "First", tool_calls: [
+        { id: "c1", name: "read", arguments: {} },
+      ] },
+      { role: "tool", tool_call_id: "c1", name: "read", content: "ok", ok: true, data: null, details: null, error: null },
+      { role: "assistant", content: "Second", tool_calls: [
+        { id: "c2", name: "write", arguments: {} },
+      ] },
+    ];
+    const harness = new AgentHarness({ provider, model: "fake", system: "" }, messages);
+
+    await collect(harness.prompt("Next"));
+
+    // Should repair only c2 (the latest with no result), not c1 (already has result)
+    const toolMsgs = harness.messages.filter((m) => m.role === "tool");
+    expect(toolMsgs.length).toBe(2); // c1 result + c2 repair
+    const c2 = toolMsgs[1]!;
+    if (c2.role === "tool") {
+      expect(c2.tool_call_id).toBe("c2");
+      expect(c2.ok).toBe(false);
+      expect(c2.error).toContain("interrupted");
+    }
+  });
+
+  test("repair happens before the new user message in transcript", async () => {
+    const provider = FakeProvider.singleTextResponse("Response");
+    const messages: AgentMessage[] = [
+      { role: "user", content: "Old prompt" },
+      { role: "assistant", content: "Old response", tool_calls: [
+        { id: "c1", name: "read", arguments: {} },
+      ] },
+    ];
+    const harness = new AgentHarness({ provider, model: "fake", system: "" }, messages);
+
+    await collect(harness.prompt("New prompt"));
+
+    // Verify ordering: old_user, old_asst, repair, new_user, new_asst
+    const roles = harness.messages.map((m) => m.role);
+    // Should be: user(Old prompt), assistant, tool(repair), user(New prompt), assistant(response)
+    expect(roles).toEqual(["user", "assistant", "tool", "user", "assistant"]);
+    const newUserIdx = roles.indexOf("user", 1); // second "user"
+    const repairIdx = roles.indexOf("tool");
+    expect(repairIdx).toBeLessThan(newUserIdx);
+  });
+});
+
+// === cancel() with no active run is a no-op ===
+
+describe("AgentHarness — cancel edge cases", () => {
+  test("cancel with no active run does not throw", () => {
+    const harness = new AgentHarness({ provider: new FakeProvider([]), model: "fake", system: "" });
+    expect(() => harness.cancel()).not.toThrow();
+  });
+
+  test("prompt works after cancel without active run", async () => {
+    const provider = FakeProvider.singleTextResponse("ok");
+    const harness = new AgentHarness({ provider, model: "fake", system: "" });
+    harness.cancel(); // no-op
+    const events = await collect(harness.prompt("Hi"));
+    expect(events[events.length - 1]!.type).toBe("agent_end");
+  });
+});
