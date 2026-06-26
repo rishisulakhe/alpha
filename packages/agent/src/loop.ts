@@ -1,24 +1,10 @@
 import type { ModelProvider, ProviderEvent } from "@alpha/ai";
 import type { AgentMessage, AssistantMessage, ToolCall, ToolResultMessage } from "./messages.ts";
 import type { AgentTool, AgentToolResult, CancellationToken } from "./tools.ts";
-import { isToolResultMessage } from "./messages.ts";
 import {
-  AgentStartEventSchema,
-  AgentEndEventSchema,
-  TurnStartEventSchema,
-  TurnEndEventSchema,
-  MessageStartEventSchema,
-  MessageDeltaEventSchema,
-  ThinkingDeltaEventSchema,
-  MessageEndEventSchema,
-  ToolExecutionStartEventSchema,
-  ToolExecutionEndEventSchema,
-  RetryEventSchema,
-  QueueUpdateEventSchema,
-  ErrorEventSchema,
   type AgentEvent,
-  type AgentEndEvent,
   type AgentStartEvent,
+  type AgentEndEvent,
   type TurnStartEvent,
   type TurnEndEvent,
   type MessageStartEvent,
@@ -47,7 +33,10 @@ export async function* runAgentLoop(opts: {
   getSteeringMessages?: () => AgentMessage[];
   getFollowUpMessages?: () => AgentMessage[];
   getQueueUpdate?: () => Omit<QueueUpdateEvent, "type">;
+  queueMode?: "one_at_a_time" | "all";
 }): AsyncIterable<AgentEvent> {
+  const queueMode = opts.queueMode ?? "one_at_a_time";
+
   yield { type: "agent_start" } satisfies AgentStartEvent;
 
   if (opts.maxTurns != null && opts.maxTurns < 1) {
@@ -67,6 +56,11 @@ export async function* runAgentLoop(opts: {
 
     yield { type: "turn_start", turn } satisfies TurnStartEvent;
 
+    // Drain steering at the top of the turn (before provider call)
+    for (const ev of _drainQueuedMessages(opts.messages, opts.getSteeringMessages, opts.getQueueUpdate, queueMode)) {
+      yield ev;
+    }
+
     let assistantMessage: AssistantMessage | null = null;
     let sawProviderError = false;
 
@@ -77,6 +71,11 @@ export async function* runAgentLoop(opts: {
       tools: opts.tools,
       signal: opts.signal,
     })) {
+      if (opts.signal?.isCancelled()) {
+        yield { type: "error", message: "Agent run cancelled", recoverable: true } satisfies ErrorEvent;
+        break;
+      }
+
       switch (pe.type) {
         case "response_start":
           yield { type: "message_start", role: "assistant" as const } satisfies MessageStartEvent;
@@ -97,7 +96,6 @@ export async function* runAgentLoop(opts: {
           } satisfies RetryEvent;
           break;
         case "tool_call":
-          // Accumulated later; ToolCallBuilder already did the work
           break;
         case "response_end":
           assistantMessage = pe.message;
@@ -116,12 +114,13 @@ export async function* runAgentLoop(opts: {
       }
     }
 
+    // If cancelled during provider stream, exit cleanly
+    if (opts.signal?.isCancelled()) {
+      yield { type: "turn_end", turn } satisfies TurnEndEvent;
+      break;
+    }
+
     if (assistantMessage === null) {
-      if (opts.signal?.isCancelled()) {
-        yield { type: "error", message: "Agent run cancelled", recoverable: true } satisfies ErrorEvent;
-        yield { type: "turn_end", turn } satisfies TurnEndEvent;
-        break;
-      }
       yield { type: "turn_end", turn } satisfies TurnEndEvent;
       if (sawProviderError) break;
       yield { type: "error", message: "Provider stream ended without an assistant message", recoverable: false } satisfies ErrorEvent;
@@ -132,14 +131,14 @@ export async function* runAgentLoop(opts: {
       yield { type: "turn_end", turn } satisfies TurnEndEvent;
 
       let hadSteering = false;
-      for (const ev of _drainQueuedMessages(opts.messages, opts.getSteeringMessages, opts.getQueueUpdate)) {
+      for (const ev of _drainQueuedMessages(opts.messages, opts.getSteeringMessages, opts.getQueueUpdate, queueMode)) {
         yield ev;
         hadSteering = true;
       }
       if (hadSteering) { turn++; continue; }
 
       let hadFollowUp = false;
-      for (const ev of _drainQueuedMessages(opts.messages, opts.getFollowUpMessages, opts.getQueueUpdate)) {
+      for (const ev of _drainQueuedMessages(opts.messages, opts.getFollowUpMessages, opts.getQueueUpdate, "all")) {
         yield ev;
         hadFollowUp = true;
       }
@@ -193,7 +192,7 @@ export async function* runAgentLoop(opts: {
 
     yield { type: "turn_end", turn } satisfies TurnEndEvent;
 
-    for (const ev of _drainQueuedMessages(opts.messages, opts.getSteeringMessages, opts.getQueueUpdate)) {
+    for (const ev of _drainQueuedMessages(opts.messages, opts.getSteeringMessages, opts.getQueueUpdate, queueMode)) {
       yield ev;
     }
 
@@ -219,12 +218,15 @@ function* _drainQueuedMessages(
   messages: AgentMessage[],
   getMessages: (() => AgentMessage[]) | undefined,
   getQueueUpdate: (() => Omit<QueueUpdateEvent, "type">) | undefined,
+  mode: "one_at_a_time" | "all" = "all",
 ): Generator<AgentEvent> {
   if (!getMessages) return;
   const queued = getMessages();
   if (queued.length === 0) return;
 
-  for (const msg of queued) {
+  const drained = mode === "one_at_a_time" ? queued.slice(0, 1) : queued;
+
+  for (const msg of drained) {
     messages.push(msg);
     yield { type: "message_start", role: msg.role } satisfies MessageStartEvent;
     yield { type: "message_end", message: msg } satisfies MessageEndEvent;

@@ -15,6 +15,22 @@ export interface CancellationToken {
 }
 
 // ---------------------------------------------------------------------------
+// SimpleCancellationToken — concrete implementation for tests and harness
+// ---------------------------------------------------------------------------
+
+export class SimpleCancellationToken implements CancellationToken {
+  private _cancelled = false;
+
+  isCancelled(): boolean {
+    return this._cancelled;
+  }
+
+  cancel(): void {
+    this._cancelled = true;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // AgentToolResult — structured result returned by a tool execution
 // ---------------------------------------------------------------------------
 
