@@ -51,13 +51,14 @@ export function errorResult(
 import { createReadTool } from "./read.ts";
 import { createWriteTool } from "./write.ts";
 import { createEditTool } from "./edit.ts";
+import { createBashTool } from "./bash.ts";
 
 export async function createCodingTools(cwd: string): Promise<CodingTool[]> {
   const tools: CodingTool[] = [
     createReadTool(cwd),
     createWriteTool(cwd),
     createEditTool(cwd),
-    // createBashTool(cwd), — Step 27
+    createBashTool(cwd),
   ];
   return tools;
 }

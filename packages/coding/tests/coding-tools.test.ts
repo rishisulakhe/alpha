@@ -388,13 +388,118 @@ describe("createCodingTools", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-tools-factory-"));
     try {
       const tools = await createCodingTools(tmpDir);
-      expect(tools.length).toBe(3);
-      expect(tools.map((t) => t.name)).toEqual(["read", "write", "edit"]);
+      expect(tools.length).toBe(4);
+      expect(tools.map((t) => t.name)).toEqual(["read", "write", "edit", "bash"]);
       // Each tool should have required CodingTool metadata
       for (const tool of tools) {
         expect(tool.promptSnippet).toBeTypeOf("string");
         expect(tool.promptGuidelines).toBeTypeOf("string");
       }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+import { createBashTool } from "../src/tools/bash.ts";
+
+// === Bash tool ===
+
+describe("Bash tool — basic execution", () => {
+  test("runs echo and captures stdout", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-bash-"));
+    try {
+      const tool = createBashTool(tmpDir);
+      const result = await tool.execute({ command: "echo hello" });
+      expect(result.ok).toBe(true);
+      expect(result.content).toContain("hello");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("captures exit code for failing command", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-bash-exit-"));
+    try {
+      const tool = createBashTool(tmpDir);
+      const result = await tool.execute({ command: "exit 1" });
+      expect(result.ok).toBe(false);
+      expect(result.details).toBeDefined();
+      if (result.details) {
+        expect(result.details.exitCode).toBe(1);
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("captures stderr", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-bash-stderr-"));
+    try {
+      const tool = createBashTool(tmpDir);
+      const result = await tool.execute({ command: "echo error >&2" });
+      expect(result.content).toContain("error");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("runs in specified cwd", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-bash-cwd-"));
+    const subDir = path.join(tmpDir, "sub");
+    fs.mkdirSync(subDir);
+    try {
+      const tool = createBashTool(tmpDir);
+      const result = await tool.execute({ command: "cd sub && pwd" });
+      expect(result.ok).toBe(true);
+      expect(result.content).toContain("sub");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Bash tool — timeout", () => {
+  test("reports timeout for slow command", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-bash-timeout-"));
+    try {
+      const tool = createBashTool(tmpDir);
+      const result = await tool.execute({ command: "sleep 10", timeout: 200 });
+      expect(result.ok).toBe(false);
+      expect(result.details).toBeDefined();
+      if (result.details) {
+        expect(result.details.timedOut).toBe(true);
+      }
+      expect(result.content).toContain("timed out");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Bash tool — cancellation", () => {
+  test("reports cancelled when signal is set before execution", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-bash-cancel-"));
+    let cancelled = true;
+    const signal = { isCancelled: () => cancelled };
+    try {
+      const tool = createBashTool(tmpDir);
+      const result = await tool.execute({ command: "echo should not run" }, signal);
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("cancelled");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("createCodingTools — all four tools", () => {
+  test("returns all four tools in correct order", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-alltools-"));
+    try {
+      const tools = await createCodingTools(tmpDir);
+      expect(tools.length).toBe(4);
+      expect(tools.map((t) => t.name)).toEqual(["read", "write", "edit", "bash"]);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
