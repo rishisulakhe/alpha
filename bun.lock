@@ -23,6 +23,10 @@
     "packages/ai": {
       "name": "@alpha/ai",
       "version": "0.1.0",
+      "dependencies": {
+        "@alpha/agent": "workspace:*",
+        "zod": "^4.4.3",
+      },
       "devDependencies": {
         "@types/bun": "latest",
         "typescript": "^5",
