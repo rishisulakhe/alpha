@@ -48,8 +48,16 @@ export function errorResult(
 // createCodingTools — factory for all four built-in tools
 // ---------------------------------------------------------------------------
 
-export async function createCodingTools(_cwd: string): Promise<CodingTool[]> {
-  // Stub — will be filled in as tools are implemented
-  const tools: CodingTool[] = [];
+import { createReadTool } from "./read.ts";
+import { createWriteTool } from "./write.ts";
+import { createEditTool } from "./edit.ts";
+
+export async function createCodingTools(cwd: string): Promise<CodingTool[]> {
+  const tools: CodingTool[] = [
+    createReadTool(cwd),
+    createWriteTool(cwd),
+    createEditTool(cwd),
+    // createBashTool(cwd), — Step 27
+  ];
   return tools;
 }

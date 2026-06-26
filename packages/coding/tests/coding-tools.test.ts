@@ -10,7 +10,7 @@ import { successResult, errorResult } from "../src/tools/types.ts";
 // ---------------------------------------------------------------------------
 
 describe("successResult / errorResult", () => {
-  test("successResult returns ok: true with structured data", () => {
+  test("successResult returns ok: true with structured data", async () => {
     const r = successResult("call-1", "read", "content", { path: "/tmp/file.txt" });
     expect(r.ok).toBe(true);
     expect(r.toolCallId).toBe("call-1");
@@ -19,7 +19,7 @@ describe("successResult / errorResult", () => {
     expect(r.data).toEqual({ path: "/tmp/file.txt" });
   });
 
-  test("errorResult returns ok: false with error message", () => {
+  test("errorResult returns ok: false with error message", async () => {
     const r = errorResult("call-1", "read", "File not found", { path: "/tmp/missing" });
     expect(r.ok).toBe(false);
     expect(r.error).toBe("File not found");
@@ -164,6 +164,236 @@ describe("Read tool — image files", () => {
         expect(result.data.mimeType).toBe("image/png");
         expect(result.data.base64).toBeTypeOf("string");
         expect(result.data.base64).toContain("base64");
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+import { createWriteTool } from "../src/tools/write.ts";
+import { createEditTool } from "../src/tools/edit.ts";
+
+// === Write tool ===
+
+describe("Write tool", () => {
+  test("creates a file with content", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-write-"));
+    const filePath = path.join(tmpDir, "new-file.txt");
+    try {
+      const tool = createWriteTool(tmpDir);
+      const result = await tool.execute({ filePath: "new-file.txt", content: "Hello world" });
+      expect(result.ok).toBe(true);
+      expect(result.data).toBeDefined();
+      
+      const written = fs.readFileSync(filePath, "utf-8");
+      expect(written).toBe("Hello world");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("overwrites existing file", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-write-overwrite-"));
+    const filePath = path.join(tmpDir, "existing.txt");
+    fs.writeFileSync(filePath, "old content");
+    try {
+      const tool = createWriteTool(tmpDir);
+      const result = await tool.execute({ filePath: "existing.txt", content: "new content" });
+      expect(result.ok).toBe(true);
+      const written = fs.readFileSync(filePath, "utf-8");
+      expect(written).toBe("new content");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("creates parent directories", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-write-nested-"));
+    try {
+      const tool = createWriteTool(tmpDir);
+      const result = await tool.execute({ filePath: "deeply/nested/file.txt", content: "nested" });
+      expect(result.ok).toBe(true);
+      const nestedPath = path.join(tmpDir, "deeply", "nested", "file.txt");
+      expect(fs.existsSync(nestedPath)).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects path traversal", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-write-traversal-"));
+    try {
+      const tool = createWriteTool(tmpDir);
+      const result = await tool.execute({ filePath: "../../etc/hosts", content: "evil" });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("traversal");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// === Edit tool ===
+
+describe("Edit tool — single replacement", () => {
+  test("applies a single text replacement", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-edit-"));
+    const filePath = path.join(tmpDir, "code.ts");
+    fs.writeFileSync(filePath, "const x = 1;\nconst y = 2;");
+    try {
+      const tool = createEditTool(tmpDir);
+      const result = await tool.execute({
+        filePath: "code.ts",
+        edits: [{ oldText: "const x = 1;", newText: "const x = 10;" }],
+      });
+      expect(result.ok).toBe(true);
+      if (result.data) {
+        expect(result.data.appliedEdits).toBe(1);
+      }
+      const content = fs.readFileSync(filePath, "utf-8");
+      expect(content).toBe("const x = 10;\nconst y = 2;");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("applies multiple replacements", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-edit-multi-"));
+    const filePath = path.join(tmpDir, "code.ts");
+    fs.writeFileSync(filePath, "first\nsecond\nthird");
+    try {
+      const tool = createEditTool(tmpDir);
+      const result = await tool.execute({
+        filePath: "code.ts",
+        edits: [
+          { oldText: "first", newText: "1st" },
+          { oldText: "third", newText: "3rd" },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      if (result.data) {
+        expect(result.data.appliedEdits).toBe(2);
+      }
+      const content = fs.readFileSync(filePath, "utf-8");
+      expect(content).toBe("1st\nsecond\n3rd");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("returns error when oldText not found", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-edit-notfound-"));
+    const filePath = path.join(tmpDir, "file.txt");
+    fs.writeFileSync(filePath, "original content");
+    try {
+      const tool = createEditTool(tmpDir);
+      const result = await tool.execute({
+        filePath: "file.txt",
+        edits: [{ oldText: "nonexistent", newText: "replacement" }],
+      });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("not found");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("returns error when oldText matches multiple times", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-edit-multi-match-"));
+    const filePath = path.join(tmpDir, "file.txt");
+    fs.writeFileSync(filePath, "dup\ndup\ndup");
+    try {
+      const tool = createEditTool(tmpDir);
+      const result = await tool.execute({
+        filePath: "file.txt",
+        edits: [{ oldText: "dup", newText: "unique" }],
+      });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("3 locations");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("rolls back — file unchanged when any edit fails", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-edit-rollback-"));
+    const filePath = path.join(tmpDir, "important.txt");
+    const original = "line1\nline2\nline3";
+    fs.writeFileSync(filePath, original);
+    try {
+      const tool = createEditTool(tmpDir);
+      const result = await tool.execute({
+        filePath: "important.txt",
+        edits: [
+          { oldText: "line1", newText: "modified" }, // valid
+          { oldText: "nonexistent", newText: "fail" }, // invalid
+        ],
+      });
+      expect(result.ok).toBe(false);
+      // File should be unchanged
+      const content = fs.readFileSync(filePath, "utf-8");
+      expect(content).toBe(original);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("edits non-unique oldText returns error", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-edit-nonunique-"));
+    const filePath = path.join(tmpDir, "file.txt");
+    fs.writeFileSync(filePath, "lineA\nlineB\nlineA");
+    try {
+      const tool = createEditTool(tmpDir);
+      const result = await tool.execute({
+        filePath: "file.txt",
+        edits: [{ oldText: "lineA", newText: "changed" }],
+      });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("2 locations");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("generates a patch in the result data", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-edit-patch-"));
+    const filePath = path.join(tmpDir, "code.ts");
+    fs.writeFileSync(filePath, "const x = 1;");
+    try {
+      const tool = createEditTool(tmpDir);
+      const result = await tool.execute({
+        filePath: "code.ts",
+        edits: [{ oldText: "1", newText: "42" }],
+      });
+      expect(result.ok).toBe(true);
+      expect(result.data).toBeDefined();
+      if (result.data) {
+        expect(result.data.patch).toBeTypeOf("string");
+        expect(result.data.patch).toContain("--- a/code.ts");
+        expect(result.data.patch).toContain("+++ b/code.ts");
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// === createCodingTools ===
+
+import { createCodingTools } from "../src/tools/types.ts";
+
+describe("createCodingTools", () => {
+  test("returns three tools with correct names (read, write, edit)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-tools-factory-"));
+    try {
+      const tools = await createCodingTools(tmpDir);
+      expect(tools.length).toBe(3);
+      expect(tools.map((t) => t.name)).toEqual(["read", "write", "edit"]);
+      // Each tool should have required CodingTool metadata
+      for (const tool of tools) {
+        expect(tool.promptSnippet).toBeTypeOf("string");
+        expect(tool.promptGuidelines).toBeTypeOf("string");
       }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
