@@ -35,6 +35,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@alpha/agent": "workspace:*"
+    "@alpha/agent": "workspace:*",
+    "zod": "^4.4.3"
   }
 }
