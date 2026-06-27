@@ -7,3 +7,5 @@ export * from "./config/paths.ts";
 export * from "./config/credentials.ts";
 export * from "./config/providers.ts";
 export * from "./resources/skills.ts";
+export * from "./resources/templates.ts";
+export * from "./prompt/system.ts";
