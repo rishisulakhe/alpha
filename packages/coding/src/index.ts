@@ -3,3 +3,5 @@ export * from "./tools/read.ts";
 export * from "./tools/write.ts";
 export * from "./tools/edit.ts";
 export * from "./tools/bash.ts";
+export * from "./config/paths.ts";
+export * from "./config/credentials.ts";
