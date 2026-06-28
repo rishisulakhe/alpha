@@ -1,9 +1,9 @@
 import { parseArgs } from "node:util";
-import { FakeProvider } from "@alpha/ai";
 import { InMemorySessionStorage } from "@alpha/agent";
 import { CodingSession, type CodingSessionConfig } from "./session.ts";
 import { SessionManager } from "./session-manager.ts";
-import { createCodingTools } from "./tools/types.ts";
+import { createProvider } from "./provider.ts";
+import { createEventRenderer } from "./rendering/index.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -103,45 +103,28 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
 
 async function handlePrintMode(args: ParsedArgs): Promise<void> {
   const cwd = args.cwd ?? process.cwd();
-  const model = args.model ?? "fake";
+  const model = args.model ?? process.env.ALPHA_MODEL ?? (process.env.OPENROUTER_API_KEY ? "openai/gpt-4o" : "echo");
   const outputFormat = args.output ?? "text";
+  const providerName = args.provider ?? (process.env.OPENROUTER_API_KEY ? "openrouter" : "demo");
 
-  // Create a simple provider for the demo
-  const provider = FakeProvider.singleTextResponse("Hello from Alpha! This is a demo response.");
+  const provider = createProvider({ model });
+  process.stderr.write(`[alpha] model=${model}, provider=${providerName}\n`);
 
   const config: CodingSessionConfig = {
     provider,
     model,
     cwd,
     storage: new InMemorySessionStorage(),
-    providerName: args.provider ?? "default",
+    providerName: providerName,
   };
 
   const session = await CodingSession.load(config);
-  const events = session.prompt(args.prompt!);
+  const renderer = createEventRenderer(outputFormat);
 
-  for await (const event of events) {
-    switch (outputFormat) {
-      case "json":
-        console.log(JSON.stringify(event));
-        break;
-      case "transcript":
-        if (event.type === "message_delta") {
-          process.stdout.write((event as { text: string }).text);
-        }
-        break;
-      case "text":
-      default:
-        if (event.type === "message_delta") {
-          process.stdout.write((event as { text: string }).text);
-        }
-        break;
-    }
+  for await (const event of session.prompt(args.prompt!)) {
+    renderer.render(event);
   }
-
-  if (outputFormat === "text" || outputFormat === "transcript") {
-    process.stdout.write("\n");
-  }
+  renderer.finish();
 }
 
 // ---------------------------------------------------------------------------

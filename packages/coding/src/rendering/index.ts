@@ -16,16 +16,25 @@ export interface EventRenderer {
 
 export class FinalTextRenderer implements EventRenderer {
   private _lastText = "";
+  private _errorText = "";
 
   render(event: AgentEvent): void {
     if (event.type === "message_end" && event.message.role === "assistant") {
       this._lastText = event.message.content;
+    }
+    if (event.type === "error") {
+      this._errorText = `Error: ${event.message}`;
+      process.stderr.write(`${this._errorText}\n`);
     }
   }
 
   finish(): boolean {
     if (this._lastText) {
       process.stdout.write(this._lastText + "\n");
+      return true;
+    }
+    if (this._errorText) {
+      process.stdout.write(this._errorText + "\n");
       return true;
     }
     return false;

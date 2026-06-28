@@ -40,6 +40,9 @@
   "dependencies": {
     "@alpha/agent": "workspace:*",
     "@alpha/ai": "workspace:*",
+    "@types/react": "18",
+    "ink": "4",
+    "react": "18",
     "zod": "^4.4.3"
   }
 }

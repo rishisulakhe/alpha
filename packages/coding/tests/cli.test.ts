@@ -12,7 +12,7 @@ describe("CLI", () => {
     });
     const output = await new Response(proc.stdout).text();
     expect(output.length).toBeGreaterThan(0);
-    expect(output).toContain("Alpha");
+    expect(output).toContain("demo response");
   });
 
   test("sessions subcommand", async () => {

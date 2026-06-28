@@ -169,6 +169,8 @@ export class CodingSession {
   get isRunning(): boolean { return this._harness.isRunning; }
   get sessionId(): string { return this._sessionId; }
 
+  cancel(): void { this._harness.cancel(); }
+
   get contextTokenEstimate(): ContextUsageEstimate {
     return estimateContextTokens(this._systemPrompt, [...this._harness.messages], this._tools);
   }
