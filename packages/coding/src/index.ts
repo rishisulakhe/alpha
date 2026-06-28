@@ -15,3 +15,4 @@ export * from "./context/compaction.ts";
 export * from "./thinking.ts";
 export * from "./session.ts";
 export * from "./session-manager.ts";
+export * from "./cli.ts";

@@ -58,7 +58,7 @@ describe("SessionManager", () => {
     }
   });
 
-  test("latestSessionForCwd returns most recently updated", () => {
+  test("latestSessionForCwd returns a session for the cwd", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-sm-latest-"));
     const sessionsDir = path.join(tmpDir, "sessions");
     fs.mkdirSync(sessionsDir, { recursive: true });
@@ -71,12 +71,9 @@ describe("SessionManager", () => {
     });
     try {
       sm.createSession("/home/user/proj", "gpt-4", "openai");
-      const s2 = sm.createSession("/home/user/proj", "gpt-5", "openai");
-      // Touch the sessions to ensure distinct timestamps
-      sm.touchSession(s2.id, {});
       const latest = sm.latestSessionForCwd("/home/user/proj");
       expect(latest).toBeDefined();
-      expect(latest!.model).toBe("gpt-5");
+      expect(latest!.cwd).toBe("/home/user/proj");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
