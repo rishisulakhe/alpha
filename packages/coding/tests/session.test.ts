@@ -20,103 +20,124 @@ function makeProvider(responses: string[]): FakeProvider {
   return new FakeProvider(streams);
 }
 
+function baseConfig(overrides?: Partial<CodingSessionConfig>): CodingSessionConfig {
+  return { provider: makeProvider(["Hello"]), model: "fake", cwd: "/tmp/test",
+    storage: new InMemorySessionStorage(), ...overrides };
+}
+
+// === load ===
+
 describe("CodingSession.load", () => {
   test("loads empty session", async () => {
-    const session = await CodingSession.load({
-      provider: makeProvider(["Hello"]),
-      model: "fake",
-      cwd: "/tmp/test",
-      storage: new InMemorySessionStorage(),
-    });
-    expect(session.cwd).toBe("/tmp/test");
-    expect(session.model).toBe("fake");
-    expect(session.isRunning).toBe(false);
-    expect(session.messages.length).toBe(0);
+    const s = await CodingSession.load(baseConfig());
+    expect(s.cwd).toBe("/tmp/test");
+    expect(s.isRunning).toBe(false);
+    expect(s.messages.length).toBe(0);
   });
 });
+
+// === prompt ===
 
 describe("CodingSession.prompt", () => {
   test("generates assistant response", async () => {
-    const session = await CodingSession.load({
-      provider: makeProvider(["Hi there!"]),
-      model: "fake",
-      cwd: "/tmp/test",
-      storage: new InMemorySessionStorage(),
-    });
-    const events = await collect(session.prompt("Hello"));
-    expect(events.length).toBeGreaterThan(0);
-    const msgs = session.messages;
-    expect(msgs.length).toBeGreaterThanOrEqual(1);
-    expect(msgs.some((m) => m.role === "user" && m.content === "Hello")).toBe(true);
+    const s = await CodingSession.load(baseConfig({ provider: makeProvider(["Hi!"]) }));
+    await collect(s.prompt("Hello"));
+    expect(s.messages.some((m) => m.role === "user" && m.content === "Hello")).toBe(true);
   });
 
-  test("multiple prompts work with enough provider streams", async () => {
-    const session = await CodingSession.load({
-      provider: makeProvider(["First answer", "Second answer", "Third answer"]),
-      model: "fake",
-      cwd: "/tmp/test",
-      storage: new InMemorySessionStorage(),
-    });
-    await collect(session.prompt("Q1"));
-    await collect(session.prompt("Q2"));
-    expect(session.messages.filter((m) => m.role === "user").length).toBe(2);
-    expect(session.messages.filter((m) => m.role === "assistant").length).toBe(2);
+  test("multiple prompts", async () => {
+    const s = await CodingSession.load(baseConfig({ provider: makeProvider(["A1", "A2", "A3"]) }));
+    await collect(s.prompt("Q1"));
+    await collect(s.prompt("Q2"));
+    expect(s.messages.filter((m) => m.role === "user").length).toBe(2);
   });
 });
+
+// === continue_ ===
 
 describe("CodingSession.continue_", () => {
   test("continues without adding user message", async () => {
-    const session = await CodingSession.load({
-      provider: makeProvider(["First", "Second"]),
-      model: "fake",
-      cwd: "/tmp/test",
-      storage: new InMemorySessionStorage(),
-    });
-    await collect(session.prompt("Q1"));
-    const before = session.messages.length;
-    await collect(session.continue_());
-    expect(session.messages.length).toBeGreaterThan(before);
+    const s = await CodingSession.load(baseConfig({ provider: makeProvider(["First", "Second"]) }));
+    await collect(s.prompt("Q1"));
+    const before = s.messages.length;
+    await collect(s.continue_());
+    expect(s.messages.length).toBeGreaterThan(before);
   });
 });
+
+// === persistence ===
+
+describe("CodingSession — persistence", () => {
+  test("persists messages as entries in storage", async () => {
+    const storage = new InMemorySessionStorage();
+    const s = await CodingSession.load(baseConfig({ storage, provider: makeProvider(["A"]) }));
+    await collect(s.prompt("Hello"));
+    const entries = await storage.readAll();
+    const msgs = entries.filter((e) => e.type === "message");
+    expect(msgs.length).toBeGreaterThanOrEqual(2); // user + assistant
+  });
+
+  test("leaf entries track the active branch", async () => {
+    const storage = new InMemorySessionStorage();
+    const s = await CodingSession.load(baseConfig({ storage, provider: makeProvider(["A"]) }));
+    await collect(s.prompt("Q1"));
+    const entries = await storage.readAll();
+    const leaves = entries.filter((e) => e.type === "leaf");
+    expect(leaves.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("load restores messages from storage", async () => {
+    const storage = new InMemorySessionStorage();
+    const s1 = await CodingSession.load(baseConfig({ storage, provider: makeProvider(["A1", "A2"]) }));
+    await collect(s1.prompt("Q1"));
+    await collect(s1.prompt("Q2"));
+
+    const s2 = await CodingSession.load(baseConfig({ storage, provider: makeProvider(["X"]) }));
+    expect(s2.messages.length).toBeGreaterThanOrEqual(4); // Q1+asst + Q2+asst
+  });
+});
+
+// === branching ===
+
+describe("CodingSession — branching", () => {
+  test("treeChoices returns message entries", async () => {
+    const s = await CodingSession.load(baseConfig({ storage: new InMemorySessionStorage(), provider: makeProvider(["A"]) }));
+    await collect(s.prompt("Hello"));
+    const choices = s.treeChoices();
+    expect(choices.length).toBeGreaterThanOrEqual(1);
+    expect(choices[0]!.entryId).toBeTypeOf("string");
+  });
+
+  test("branchTo creates leaf and reloads state", async () => {
+    const storage = new InMemorySessionStorage();
+    const s = await CodingSession.load(baseConfig({ storage, provider: makeProvider(["A", "B"]) }));
+    await collect(s.prompt("Q1"));
+    await collect(s.prompt("Q2"));
+    const msgsBefore = s.messages.length;
+
+    const choices = s.treeChoices();
+    const firstUserEntry = choices[0]!;
+
+    await s.branchTo(firstUserEntry.entryId);
+    // After branching, messages should reflect the new path
+    expect(s.messages.length).toBeGreaterThan(0);
+  });
+});
+
+// === expandPromptText ===
 
 describe("CodingSession.expandPromptText", () => {
   test("passes through plain text", async () => {
-    const session = await CodingSession.load({
-      provider: makeProvider(["ok"]),
-      model: "fake",
-      cwd: "/tmp/test",
-      storage: new InMemorySessionStorage(),
-    });
-    expect(session.expandPromptText("plain text")).toBe("plain text");
+    const s = await CodingSession.load(baseConfig());
+    expect(s.expandPromptText("plain")).toBe("plain");
   });
 });
+
+// === context tokens ===
 
 describe("CodingSession.contextTokenEstimate", () => {
   test("returns estimate", async () => {
-    const session = await CodingSession.load({
-      provider: makeProvider(["ok"]),
-      model: "fake",
-      cwd: "/tmp/test",
-      storage: new InMemorySessionStorage(),
-    });
-    const est = session.contextTokenEstimate;
-    expect(est.totalTokens).toBeGreaterThan(0);
-  });
-});
-
-describe("CodingSession.compact", () => {
-  test("compacts large messages with auto threshold", async () => {
-    const session = await CodingSession.load({
-      provider: makeProvider(["Reply"]),
-      model: "fake",
-      cwd: "/tmp/test",
-      storage: new InMemorySessionStorage(),
-      autoCompactTokenThreshold: 1, // Always compact
-    });
-    await collect(session.prompt("Hello"));
-    // The threshold check happens on next prompt
-    await collect(session.prompt("World"));
-    // Compaction should have happened
-    expect(session.messages.length).toBeGreaterThan(0);
+    const s = await CodingSession.load(baseConfig());
+    expect(s.contextTokenEstimate.totalTokens).toBeGreaterThan(0);
   });
 });

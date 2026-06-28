@@ -1,38 +1,29 @@
 import type { ModelProvider } from "@alpha/ai";
 import {
   AgentHarness,
-  type AgentHarnessConfig,
   type AgentEvent,
   type AgentMessage,
   type SessionEntry,
   type SessionState,
   type SessionStorage,
-  type SessionInfoEntry,
-  type ModelChangeEntry,
-  type ThinkingLevelChangeEntry,
-  type MessageEntry,
-  type LeafEntry,
-  type CompactionEntry,
-  type BranchSummaryEntry,
-  type LabelEntry,
-  type CustomEntry,
   fromEntries,
   activeLeafId,
   newEntryId,
   currentTimestamp,
   InMemorySessionStorage,
+  pathToEntry,
+  branchableEntries,
 } from "@alpha/agent";
 import type { CodingTool } from "./tools/types.ts";
 import { createCodingTools } from "./tools/types.ts";
 import type { Skill } from "./resources/skills.ts";
 import { loadSkills } from "./resources/skills.ts";
 import type { PromptTemplate } from "./resources/templates.ts";
-import { loadPromptTemplates, expandTemplateInvocation } from "./resources/templates.ts";
+import { expandTemplateInvocation } from "./resources/templates.ts";
 import type { ProjectContextFile } from "./context/discovery.ts";
 import { discoverProjectContext } from "./context/discovery.ts";
-import { type ContextUsageEstimate, estimateContextTokens, autoCompactionThreshold, DEFAULT_CONTEXT_WINDOW } from "./context/tokens.ts";
+import { type ContextUsageEstimate, estimateContextTokens } from "./context/tokens.ts";
 import {
-  buildCompactionPrompt,
   recentPreservingCompactionPlan,
   summarizeMessagesForCompaction,
 } from "./context/compaction.ts";
@@ -64,13 +55,19 @@ export interface CodingSessionConfig {
   maxTurns?: number;
 }
 
+export interface BranchChoice {
+  entryId: string;
+  parentId: string | null;
+  summary: string;
+  indent: number;
+}
+
 // ---------------------------------------------------------------------------
 // CodingSession
 // ---------------------------------------------------------------------------
 
 export class CodingSession {
   private _config: CodingSessionConfig;
-  private _state: SessionState;
   private _harness: AgentHarness;
   private _storage: SessionStorage;
   private _tools: CodingTool[];
@@ -82,28 +79,23 @@ export class CodingSession {
   private _thinkingLevel: ThinkingLevel;
   private _providerName: string;
   private _sessionId: string;
-  private _persistedCount = 0;
-  private _nextParentId: string | null = null;
+  private _allEntries: SessionEntry[] = [];
 
-  constructor(config: CodingSessionConfig, state: SessionState) {
+  constructor(config: CodingSessionConfig) {
     const cwd = config.cwd;
 
     this._config = config;
-    this._state = state;
     this._storage = config.storage ?? new InMemorySessionStorage();
     this._model = config.model;
     this._thinkingLevel = config.thinkingLevel ?? "medium";
     this._providerName = config.providerName ?? "default";
     this._sessionId = config.sessionId ?? newEntryId();
 
-    // Load tools, skills, templates, context
     this._tools = config.tools ?? [];
-
     this._skills = config.skills ?? [];
     this._promptTemplates = config.promptTemplates ?? [];
     this._contextFiles = config.contextFiles ?? [];
 
-    // Build system prompt
     this._systemPrompt = config.system ?? buildSystemPrompt({
       cwd,
       tools: this._tools,
@@ -113,17 +105,15 @@ export class CodingSession {
       contextFiles: this._contextFiles,
     });
 
-    // Create harness
     this._harness = new AgentHarness({
       provider: config.provider,
       model: config.model,
       system: this._systemPrompt,
       tools: this._tools,
       maxTurns: config.maxTurns,
-    }, state.messages);
+    });
 
     // Wire persistence
-    this._persistedCount = state.messages.length;
     this._harness.subscribe((ev: AgentEvent) => {
       if (ev.type === "message_end") {
         this._persistMessage(ev.message);
@@ -137,73 +127,34 @@ export class CodingSession {
     const storage = config.storage ?? new InMemorySessionStorage();
     const entries = await storage.readAll();
 
-    let state: SessionState;
+    const session = new CodingSession({ ...config, storage });
+    session._allEntries = entries;
+
     if (entries.length === 0) {
       // Create initial entries
       const info: SessionEntry = {
-        type: "session_info",
-        id: newEntryId(),
-        parentId: null,
-        timestamp: currentTimestamp(),
-        cwd: config.cwd,
-        createdAt: new Date().toISOString(),
+        type: "session_info", id: newEntryId(), parentId: null,
+        timestamp: currentTimestamp(), cwd: config.cwd, createdAt: new Date().toISOString(),
       };
       const modelChange: SessionEntry = {
-        type: "model_change",
-        id: newEntryId(),
-        parentId: info.id,
-        timestamp: currentTimestamp(),
-        model: config.model,
-        providerName: config.providerName,
+        type: "model_change", id: newEntryId(), parentId: info.id,
+        timestamp: currentTimestamp(), model: config.model, providerName: config.providerName,
       };
       const thinkingChange: SessionEntry = {
-        type: "thinking_level_change",
-        id: newEntryId(),
-        parentId: modelChange.id,
-        timestamp: currentTimestamp(),
-        level: config.thinkingLevel ?? "medium",
+        type: "thinking_level_change", id: newEntryId(), parentId: modelChange.id,
+        timestamp: currentTimestamp(), level: config.thinkingLevel ?? "medium",
       };
       await storage.append(info);
       await storage.append(modelChange);
       await storage.append(thinkingChange);
-
-      // Deferred: don't write the transcript file yet
-      state = fromEntries(await storage.readAll());
-    } else {
-      const leafId = activeLeafId(entries);
-      state = fromEntries(entries, leafId);
+      session._allEntries = await storage.readAll();
     }
 
-    // Load tools
-    const tools = await createCodingTools(config.cwd);
+    // Replay state from entries
+    const leafId = activeLeafId(session._allEntries);
+    const state = fromEntries(session._allEntries, leafId);
+    session._harness.replaceMessages([...state.messages]);
 
-    // Load resources
-    const skills = config.skills ?? [];
-    const templates = config.promptTemplates ?? [];
-    const contextFiles = config.contextFiles ?? discoverProjectContext(config.cwd);
-
-    // Build system prompt if not explicit
-    const system = config.system ?? buildSystemPrompt({
-      cwd: config.cwd,
-      tools,
-      skills,
-      customPrompt: config.customSystemPrompt,
-      appendPrompt: config.appendSystemPrompt,
-      contextFiles,
-    });
-
-    const fullConfig: CodingSessionConfig = {
-      ...config,
-      storage,
-      tools,
-      skills,
-      promptTemplates: templates,
-      contextFiles,
-      system,
-    };
-
-    // Load tools into state before creating the session
-    const session = new CodingSession(fullConfig, state);
     return session;
   }
 
@@ -214,13 +165,12 @@ export class CodingSession {
   get providerName(): string { return this._providerName; }
   get tools(): CodingTool[] { return this._tools; }
   get messages(): readonly AgentMessage[] { return this._harness.messages; }
-  get state(): SessionState { return this._state; }
   get thinkingLevel(): ThinkingLevel { return this._thinkingLevel; }
   get isRunning(): boolean { return this._harness.isRunning; }
   get sessionId(): string { return this._sessionId; }
 
   get contextTokenEstimate(): ContextUsageEstimate {
-    return estimateContextTokens(this._systemPrompt, this._state.messages, this._tools);
+    return estimateContextTokens(this._systemPrompt, [...this._harness.messages], this._tools);
   }
 
   // -- Prompt -----------------------------------------------------------------
@@ -233,7 +183,6 @@ export class CodingSession {
       return;
     }
 
-    // Auto-compaction check
     const threshold = this._config.autoCompactTokenThreshold;
     if (threshold != null) {
       const usage = this.contextTokenEstimate;
@@ -253,6 +202,10 @@ export class CodingSession {
 
   async setModel(model: string): Promise<void> {
     this._model = model;
+    await this._appendEntry({
+      type: "model_change", id: newEntryId(), parentId: this._lastParentId(),
+      timestamp: currentTimestamp(), model,
+    });
   }
 
   async setProvider(providerName: string): Promise<void> {
@@ -262,11 +215,8 @@ export class CodingSession {
   async setThinkingLevel(level: ThinkingLevel): Promise<void> {
     this._thinkingLevel = normalizeThinkingLevel(level);
     await this._appendEntry({
-      type: "thinking_level_change",
-      id: newEntryId(),
-      parentId: this._nextParentId,
-      timestamp: currentTimestamp(),
-      level: this._thinkingLevel,
+      type: "thinking_level_change", id: newEntryId(), parentId: this._lastParentId(),
+      timestamp: currentTimestamp(), level: this._thinkingLevel,
     });
   }
 
@@ -279,21 +229,14 @@ export class CodingSession {
   async reload(): Promise<void> {
     this._skills = loadSkills([]);
     this._contextFiles = discoverProjectContext(this._config.cwd);
-    this._systemPrompt = buildSystemPrompt({
-      cwd: this._config.cwd,
-      tools: this._tools,
-      skills: this._skills,
-      contextFiles: this._contextFiles,
-    });
   }
 
-  async resume(_sessionId: string): Promise<void> {
-    // Stub — Step 40 handles this
-  }
+  async resume(_sessionId: string): Promise<void> {}
 
   async newSession(): Promise<void> {
     this._sessionId = newEntryId();
-    this._persistedCount = 0;
+    this._allEntries = [];
+    this._harness.replaceMessages([]);
   }
 
   // -- Commands ---------------------------------------------------------------
@@ -302,39 +245,100 @@ export class CodingSession {
     return { handled: false };
   }
 
-  // -- Terminal commands ------------------------------------------------------
-
-  async runTerminalCommand(_command: string, _addToContext: boolean): Promise<void> {
-    // Stub
-  }
+  async runTerminalCommand(_command: string, _addToContext: boolean): Promise<void> {}
 
   // -- Prompt expansion -------------------------------------------------------
 
   expandPromptText(text: string): string {
-    // Try skill expansion first
     const skillResult = expandSkillInvocation(text, this._skills);
     if (skillResult) return skillResult;
 
-    // Try template expansion
     const tmplResult = expandTemplateInvocation(text, this._promptTemplates);
     if (tmplResult) return tmplResult;
 
     return text;
   }
 
-  // -- Persistence ------------------------------------------------------------
+  // -- Tree branching ----------------------------------------------------------
 
-  private _persistMessage(_message: AgentMessage): void {
-    this._persistedCount++;
+  treeChoices(): BranchChoice[] {
+    const messages = branchableEntries(this._allEntries);
+    return messages.map((e, i) => ({
+      entryId: e.id,
+      parentId: e.parentId,
+      summary: e.type === "message" ? this._summarizeMessage(e.message) : e.id,
+      indent: 0,
+    }));
   }
 
-  private async _appendEntry(_entry: SessionEntry): Promise<void> {
-    // Stub — will be fully implemented in Step 39
+  async branchTo(entryId: string, _summarize?: boolean, _customInstructions?: string): Promise<void> {
+    // Create a leaf entry pointing to the target
+    const leaf: SessionEntry = {
+      type: "leaf", id: newEntryId(), parentId: this._lastParentId(),
+      timestamp: currentTimestamp(), entryId,
+    };
+    await this._appendEntry(leaf);
+
+    // Reload state from the new branch
+    await this._refreshFromStorage();
+  }
+
+  // -- Persistence (public for Storage verification) ---------------------------
+
+  get storage(): SessionStorage { return this._storage; }
+  get allEntries(): SessionEntry[] { return this._allEntries; }
+
+  // -- Private helpers --------------------------------------------------------
+
+  private _persistMessage(message: AgentMessage): void {
+    const entryId = newEntryId();
+    const parentId = this._lastParentId();
+
+    const msgEntry: SessionEntry = {
+      type: "message", id: entryId, parentId,
+      timestamp: currentTimestamp(), message,
+    };
+    const leafEntry: SessionEntry = {
+      type: "leaf", id: newEntryId(), parentId: entryId,
+      timestamp: currentTimestamp(), entryId,
+    };
+
+    // Append to storage and local cache
+    this._storage.append(msgEntry).catch(() => {});
+    this._storage.append(leafEntry).catch(() => {});
+    this._allEntries.push(msgEntry);
+    this._allEntries.push(leafEntry);
+  }
+
+  private async _appendEntry(entry: SessionEntry): Promise<void> {
+    await this._storage.append(entry);
+    this._allEntries.push(entry);
+  }
+
+  private async _refreshFromStorage(): Promise<void> {
+    this._allEntries = await this._storage.readAll();
+    const leafId = activeLeafId(this._allEntries);
+    const state = fromEntries(this._allEntries, leafId);
+    this._harness.replaceMessages([...state.messages]);
+  }
+
+  private _lastParentId(): string | null {
+    for (let i = this._allEntries.length - 1; i >= 0; i--) {
+      const e = this._allEntries[i]!;
+      if (e.type === "leaf") return e.id;
+    }
+    return null;
+  }
+
+  private _summarizeMessage(message: AgentMessage): string {
+    const prefix = `[${message.role[0]!.toUpperCase() + message.role.slice(1)}]`;
+    const content = message.content.slice(0, 60);
+    return `${prefix}: ${content}`;
   }
 
   private async _compactImpl(): Promise<void> {
-    const usage = this.contextTokenEstimate;
-    const plan = recentPreservingCompactionPlan(this._state.messages);
+    const msgs = this._harness.messages;
+    const plan = recentPreservingCompactionPlan([...msgs]);
 
     if (plan.compact.length === 0) return;
 
