@@ -16,3 +16,4 @@ export * from "./thinking.ts";
 export * from "./session.ts";
 export * from "./session-manager.ts";
 export * from "./cli.ts";
+export * from "./rendering/index.ts";
