@@ -38,6 +38,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@alpha/agent": "workspace:*",
+        "@alpha/ai": "workspace:*",
         "zod": "^4.4.3",
       },
       "devDependencies": {
