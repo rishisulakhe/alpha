@@ -11,3 +11,5 @@ export * from "./resources/templates.ts";
 export * from "./prompt/system.ts";
 export * from "./context/discovery.ts";
 export * from "./context/tokens.ts";
+export * from "./context/compaction.ts";
+export * from "./thinking.ts";
