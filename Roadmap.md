@@ -8,6 +8,24 @@
 
 ---
 
+## Progress Tracker
+
+| Phase | Steps | Status | Notes |
+|---|---|---|---|
+| 1 — Foundation | 1-4 | ✅ Complete | Monorepo, JSON types, messages, tools |
+| 2 — Provider Layer | 5-9 | ✅ Complete | Provider protocol, events, OpenAI, Anthropic |
+| 3 — Agent Loop | 10-14 | ✅ Complete | Agent events, loop, tool execution, queues |
+| 4 — Agent Harness | 15-18 | ✅ Complete | Harness, queues, listeners, cancellation |
+| 5 — Session Storage | 19-23 | ✅ Complete | Entry types, JSONL, storage, tree reconstruction |
+| 6 — Coding Tools | 24-27 | ✅ Complete | Read, write, edit, bash tools |
+| 7 — App Foundation | 28-33 | ✅ Complete | Paths, credentials, providers, skills, templates |
+| 8 — Context | 34-37 | ✅ Complete | Context discovery, tokens, compaction, thinking |
+| 9 — CodingSession | 38-40 | ✅ Complete | Session orchestrator, persistence, manager |
+| — Enhanced Session | — | ✅ Complete | Per-project indexing, HTML/JSONL export, default sessions |
+| 10 — CLI & TUI | 41-44 | 🟡 Partial | CLI modes done, Ink TUI placeholder |
+
+---
+
 ## Phase 1 — Project Foundation (Steps 1–4)
 
 ### Step 1: Initialize Bun Workspaces Monorepo
