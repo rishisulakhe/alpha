@@ -22,7 +22,12 @@ describe("SessionManager", () => {
       tuiSettingsFile: path.join(tmpDir, "tui.json"),
     });
     try {
-      const s = sm.createSession("/home/user/my-project", "gpt-4", "openai", "My Session");
+      const s = sm.createSession({
+        cwd: "/home/user/my-project",
+        model: "gpt-4",
+        providerName: "openai",
+        title: "My Session",
+      });
       expect(s.id).toBeTypeOf("string");
       expect(s.cwd).toBe("/home/user/my-project");
       expect(s.model).toBe("gpt-4");
@@ -47,8 +52,8 @@ describe("SessionManager", () => {
       tuiSettingsFile: path.join(tmpDir, "tui.json"),
     });
     try {
-      sm.createSession("/home/user/proj-a", "gpt-4", "openai");
-      sm.createSession("/home/user/proj-b", "claude", "anthropic");
+      sm.createSession({ cwd: "/home/user/proj-a", model: "gpt-4", providerName: "openai" });
+      sm.createSession({ cwd: "/home/user/proj-b", model: "claude", providerName: "anthropic" });
 
       expect(sm.listSessions("/home/user/proj-a").length).toBe(1);
       expect(sm.listSessions("/home/user/proj-b").length).toBe(1);
@@ -70,7 +75,7 @@ describe("SessionManager", () => {
       tuiSettingsFile: path.join(tmpDir, "tui.json"),
     });
     try {
-      sm.createSession("/home/user/proj", "gpt-4", "openai");
+      sm.createSession({ cwd: "/home/user/proj", model: "gpt-4", providerName: "openai" });
       const latest = sm.latestSessionForCwd("/home/user/proj");
       expect(latest).toBeDefined();
       expect(latest!.cwd).toBe("/home/user/proj");
@@ -91,7 +96,7 @@ describe("SessionManager", () => {
       tuiSettingsFile: path.join(tmpDir, "tui.json"),
     });
     try {
-      const s = sm.createSession("/home/user/proj", "gpt-4", "openai");
+      const s = sm.createSession({ cwd: "/home/user/proj", model: "gpt-4", providerName: "openai" });
       sm.touchSession(s.id, { model: "gpt-5", title: "Updated" });
       const updated = sm.getSession(s.id);
       expect(updated).toBeDefined();

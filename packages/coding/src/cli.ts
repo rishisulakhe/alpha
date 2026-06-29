@@ -221,7 +221,8 @@ async function handleSessions(): Promise<void> {
   }
 
   for (const s of sessions) {
-    console.log(`[${s.id.slice(0, 8)}] ${s.cwd} — ${s.model} (${s.updatedAt.slice(0, 16)})`);
+    const updatedAt = new Date(s.updatedAt * 1000).toISOString().slice(0, 16);
+    console.log(`[${s.id.slice(0, 8)}] ${s.cwd} — ${s.model} (${updatedAt})`);
   }
 }
 

@@ -187,15 +187,20 @@ describe("renderSessionHtml", () => {
 
   test("renders message entries", () => {
     const entries: SessionEntry[] = [
-      makeEntry("message", {
+      {
         id: "user-1",
+        parentId: null,
+        timestamp: Date.now() / 1000,
+        type: "message",
         message: { role: "user", content: "Hello world" },
-      }),
-      makeEntry("message", {
+      },
+      {
         id: "asst-1",
         parentId: "user-1",
+        timestamp: Date.now() / 1000,
+        type: "message",
         message: { role: "assistant", content: "Hi there!", tool_calls: [] },
-      } as SessionEntry),
+      },
     ];
 
     const html = renderSessionHtml(entries, { title: "Test Session" });
@@ -208,8 +213,11 @@ describe("renderSessionHtml", () => {
 
   test("renders tool calls", () => {
     const entries: SessionEntry[] = [
-      makeEntry("message", {
+      {
         id: "asst-1",
+        parentId: null,
+        timestamp: Date.now() / 1000,
+        type: "message",
         message: {
           role: "assistant",
           content: "",
@@ -217,7 +225,7 @@ describe("renderSessionHtml", () => {
             { id: "tc-1", name: "read", arguments: { path: "/file.txt" } },
           ],
         },
-      } as SessionEntry),
+      },
     ];
 
     const html = renderSessionHtml(entries, { title: "Tool Test" });

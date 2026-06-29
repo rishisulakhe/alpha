@@ -58,12 +58,13 @@ export function projectSlug(cwd: string): string {
     .replace(/\//g, "-");
 }
 
-export function projectSessionDir(cwd: string): string {
+export function projectSessionDir(cwd: string, paths?: AlphaPaths): string {
   const slug = projectSlug(cwd);
   const hash = projectHash(cwd);
-  return join(HOME, "sessions", `${slug}-${hash}`);
+  const sessionsDir = paths?.sessionsDir ?? join(HOME, "sessions");
+  return join(sessionsDir, `${slug}-${hash}`);
 }
 
-export function defaultSessionPath(cwd: string): string {
-  return join(projectSessionDir(cwd), "default.jsonl");
+export function defaultSessionPath(cwd: string, paths?: AlphaPaths): string {
+  return join(projectSessionDir(cwd, paths), "default.jsonl");
 }
