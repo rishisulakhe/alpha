@@ -228,8 +228,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
       const content = delta.content;
       if (typeof content === "string" && content) {
+        // Store raw content; strip tool-call markers from streamed text for clean display
         contentParts.push(content);
-        yield { type: "text_delta", text: content } satisfies ProviderEvent;
+        const display = _stripInlineToolCalls(content);
+        if (display) {
+          yield { type: "text_delta", text: display } satisfies ProviderEvent;
+        }
       }
 
       const thinking = _thinkingDeltaText(delta);
@@ -261,7 +265,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
     yield {
       type: "response_end",
-      message: { role: "assistant", content: contentParts.join(""), tool_calls: toolCalls },
+      message: { role: "assistant", content: _stripFullToolCalls(contentParts.join("")), tool_calls: toolCalls },
       finishReason: finishReason ?? "stop",
     } satisfies ProviderEvent;
   }
@@ -277,4 +281,30 @@ function _thinkingDeltaText(delta: Record<string, unknown>): string {
     if (typeof value === "string" && value) return value;
   }
   return "";
+}
+
+function _stripTextToolCalls(text: string): string {
+  return text
+    .replace(/<\|tool_call\|>[\s\S]*?<\|tool_call\|>/g, "")
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "");
+}
+
+/** Strip full tool-call blocks from the assembled message text. */
+function _stripFullToolCalls(text: string): string {
+  return text
+    // <|tool_call|>...</|tool_call|>
+    .replace(/<\|tool_call\|>[\s\S]*?<\|tool_call\|>/g, "")
+    // <|tool_call>...</tool_call|>  (Gemini free model format)
+    .replace(/<\|tool_call>[\s\S]*?<tool_call\|>/g, "")
+    // <tool_call>...</tool_call>
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
+    .trim();
+}
+
+/** Strip tool-call marker fragments from individual streaming chunks. */
+function _stripInlineToolCalls(text: string): string {
+  // If the chunk starts with a tool call opening marker, hide it
+  if (/^<[/\|]?tool_call[\|>]/.test(text)) return "";
+  // Strip closing tool call markers from the end of a chunk
+  return text.replace(/<\/?\|?tool_call\|?>$/, "").trim();
 }

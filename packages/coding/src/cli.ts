@@ -2,7 +2,7 @@ import { parseArgs } from "node:util";
 import { InMemorySessionStorage } from "@alpha/agent";
 import { CodingSession, type CodingSessionConfig } from "./session.ts";
 import { SessionManager } from "./session-manager.ts";
-import { createProvider } from "./provider.ts";
+import { createProvider, loadProviderSettings, getAlphaPaths, ensureAlphaDirectories } from "./provider.ts";
 import { createEventRenderer } from "./rendering/index.ts";
 
 // ---------------------------------------------------------------------------
@@ -66,11 +66,18 @@ function parseCliArgs(argv: string[]): ParsedArgs {
 // ---------------------------------------------------------------------------
 
 export async function main(args: string[] = process.argv.slice(2)): Promise<void> {
+  // Ensure Alpha directories exist
+  ensureAlphaDirectories();
+
   const parsed = parseCliArgs(args);
 
   // Subcommands
   if (parsed.subcommand === "sessions") {
     await handleSessions();
+    return;
+  }
+  if (parsed.subcommand === "providers") {
+    handleProviders();
     return;
   }
   if (parsed.subcommand === "export") {
@@ -94,6 +101,7 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
   console.log("  alpha --model gpt-4         Set model");
   console.log("  alpha --output json         Output format (text, json, transcript)");
   console.log("  alpha sessions              List sessions");
+  console.log("  alpha providers             List configured providers");
   console.log("  alpha export [path]         Export session");
 }
 
@@ -103,19 +111,29 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
 
 async function handlePrintMode(args: ParsedArgs): Promise<void> {
   const cwd = args.cwd ?? process.cwd();
-  const model = args.model ?? process.env.ALPHA_MODEL ?? (process.env.OPENROUTER_API_KEY ? "openai/gpt-4o" : "echo");
   const outputFormat = args.output ?? "text";
-  const providerName = args.provider ?? (process.env.OPENROUTER_API_KEY ? "openrouter" : "demo");
 
-  const provider = createProvider({ model });
-  process.stderr.write(`[alpha] model=${model}, provider=${providerName}\n`);
+  // Create provider with specified options
+  const provider = createProvider({
+    providerName: args.provider,
+    model: args.model,
+  thinkingLevel: "medium",
+  envOnly: false, // Use full configuration
+  });
+
+  // Determine model and provider name for config
+  const paths = getAlphaPaths();
+  const settings = loadProviderSettings(paths.providersFile);
+  const providerName = args.provider ?? settings.defaultProvider;
+  const providerConfig = settings.providers.find((p) => p.name === providerName);
+  const model = args.model ?? providerConfig?.defaultModel ?? "gpt-4.1";
 
   const config: CodingSessionConfig = {
     provider,
     model,
     cwd,
     storage: new InMemorySessionStorage(),
-    providerName: providerName,
+    providerName,
   };
 
   const session = await CodingSession.load(config);
@@ -125,6 +143,38 @@ async function handlePrintMode(args: ParsedArgs): Promise<void> {
     renderer.render(event);
   }
   renderer.finish();
+}
+
+// ---------------------------------------------------------------------------
+// Providers subcommand
+// ---------------------------------------------------------------------------
+
+function handleProviders(): void {
+  const paths = getAlphaPaths();
+  const settings = loadProviderSettings(paths.providersFile);
+
+  console.log("Configured providers:\n");
+  for (const provider of settings.providers) {
+    const marker = provider.name === settings.defaultProvider ? "*" : " ";
+    const kind = provider.kind.replace("_", "-");
+    const models = provider.models.slice(0, 3).join(", ") + (provider.models.length > 3 ? "..." : "");
+    const defaultModel = provider.defaultModel;
+
+    console.log(`${marker} ${provider.name}`);
+    console.log(`    kind: ${kind}`);
+    console.log(`    default: ${defaultModel}`);
+    console.log(`    models: ${models}`);
+    // Only show apiKeyEnv for providers that have it
+    if (provider.kind !== "openai_codex" && "apiKeyEnv" in provider && provider.apiKeyEnv) {
+      console.log(`    env: ${provider.apiKeyEnv}`);
+    }
+    if (provider.credentialName) {
+      console.log(`    credential: ${provider.credentialName}`);
+    }
+    console.log();
+  }
+  console.log(`Default provider: ${settings.defaultProvider}`);
+  console.log(`\nConfig file: ${paths.providersFile}`);
 }
 
 // ---------------------------------------------------------------------------

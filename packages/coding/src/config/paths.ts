@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { mkdirSync, existsSync } from "node:fs";
 
 const HOME = join(homedir(), ".alpha");
 const AGENTS_HOME = join(homedir(), ".agents");
@@ -31,6 +32,16 @@ export function getAlphaPaths(): AlphaPaths {
     credentialsFile: join(HOME, "credentials.json"),
     tuiSettingsFile: join(HOME, "tui.json"),
   };
+}
+
+export function ensureAlphaDirectories(): void {
+  const paths = getAlphaPaths();
+  const dirs = [paths.home, paths.sessionsDir, paths.logsDir, paths.userSkillsDir, paths.userPromptsDir];
+  for (const dir of dirs) {
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+  }
 }
 
 export function projectHash(cwd: string): string {

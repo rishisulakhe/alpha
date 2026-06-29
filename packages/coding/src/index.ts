@@ -5,7 +5,26 @@ export * from "./tools/edit.ts";
 export * from "./tools/bash.ts";
 export * from "./config/paths.ts";
 export * from "./config/credentials.ts";
-export * from "./config/providers.ts";
+// Export specific items from providers to avoid conflicts
+export {
+  type ProviderConfig,
+  type ProviderSettings,
+  type OpenAICompatibleProviderConfig,
+  type AnthropicProviderConfig,
+  type OpenAICodexProviderConfig,
+  type ProviderKind,
+  loadProviderSettings,
+  saveProviderSettings,
+  resolveProviderSelection,
+  upsertProvider,
+  getProvider,
+  providerKind,
+  saveDefaultProviderModel,
+  toggleSavedScopedModel,
+  builtinProviderCatalog,
+} from "./config/providers.ts";
+export { type ThinkingLevel as ProviderThinkingLevel, providerThinkingLevels as providerThinkingLevelsFromConfig } from "./config/providers.ts";
+export * from "./config/provider-runtime.ts";
 export * from "./resources/skills.ts";
 export * from "./resources/templates.ts";
 export * from "./prompt/system.ts";
