@@ -81,7 +81,7 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
     return;
   }
   if (parsed.subcommand === "export") {
-    handleExport(parsed.subArgs ?? []);
+    await handleExport(parsed.subArgs ?? []);
     return;
   }
 
@@ -146,7 +146,7 @@ async function handlePrintMode(args: ParsedArgs): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Providers subcommand
+// Subcommands
 // ---------------------------------------------------------------------------
 
 function handleProviders(): void {
@@ -177,8 +177,38 @@ function handleProviders(): void {
   console.log(`\nConfig file: ${paths.providersFile}`);
 }
 
+async function handleExport(args: string[]): Promise<void> {
+  // Parse arguments
+  let format: string | undefined;
+  let destination: string | undefined;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--format" && i + 1 < args.length) {
+      format = args[++i];
+    } else if (arg.startsWith("--format=")) {
+      format = arg.split("=")[1];
+    } else if (!arg.startsWith("-")) {
+      destination = arg;
+    }
+  }
+
+  // For now, just show a message - full export would require a session
+  if (destination) {
+    console.log(`Export would write to: ${destination}`);
+    console.log(`Format: ${format ?? "html"}`);
+    console.log("(Full export requires an active session)");
+  } else {
+    console.log("Usage: alpha export [destination] [--format html|jsonl]");
+    console.log("");
+    console.log("Examples:");
+    console.log("  alpha export session.html");
+    console.log("  alpha export --format jsonl session.jsonl");
+  }
+}
+
 // ---------------------------------------------------------------------------
-// Subcommands
+// Sessions subcommand
 // ---------------------------------------------------------------------------
 
 async function handleSessions(): Promise<void> {
@@ -193,11 +223,6 @@ async function handleSessions(): Promise<void> {
   for (const s of sessions) {
     console.log(`[${s.id.slice(0, 8)}] ${s.cwd} — ${s.model} (${s.updatedAt.slice(0, 16)})`);
   }
-}
-
-function handleExport(args: string[]): void {
-  const dest = args[0] ?? "session.html";
-  console.log(`Export not yet implemented. Would export to: ${dest}`);
 }
 
 // ---------------------------------------------------------------------------

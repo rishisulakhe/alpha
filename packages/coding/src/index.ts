@@ -34,6 +34,7 @@ export * from "./context/compaction.ts";
 export * from "./thinking.ts";
 export * from "./session.ts";
 export * from "./session-manager.ts";
+export * from "./session-export.ts";
 export * from "./cli.ts";
 export * from "./rendering/index.ts";
 export * from "./tui/index.ts";

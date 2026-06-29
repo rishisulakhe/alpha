@@ -31,6 +31,7 @@ import { buildSystemPrompt } from "./prompt/system.ts";
 import type { ThinkingLevel } from "./thinking.ts";
 import { normalizeThinkingLevel } from "./thinking.ts";
 import { expandSkillInvocation } from "./resources/skills.ts";
+import { exportSessionArtifact, normalizeExportFormat } from "./session-export.ts";
 
 // ---------------------------------------------------------------------------
 // CodingSessionConfig
@@ -239,6 +240,17 @@ export class CodingSession {
     this._sessionId = newEntryId();
     this._allEntries = [];
     this._harness.replaceMessages([]);
+  }
+
+  /** Export the session to HTML or JSONL format. */
+  async export(destination?: string, format?: string): Promise<string> {
+    const entries = this._allEntries;
+    const outputPath = destination ?? `session-export.${format ?? "html"}`;
+    return exportSessionArtifact(entries, outputPath, {
+      title: this._sessionId,
+      source: this.cwd,
+      format,
+    });
   }
 
   // -- Commands ---------------------------------------------------------------

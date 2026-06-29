@@ -30,7 +30,7 @@ describe("CLI", () => {
       stdout: "pipe",
     });
     const output = await new Response(proc.stdout).text();
-    expect(output).toContain("Export not yet implemented");
+    expect(output).toContain("Export would write to");
   });
 
   test("default mode shows TUI placeholder", async () => {
