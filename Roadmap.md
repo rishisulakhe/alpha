@@ -22,6 +22,8 @@
 | 8 — Context | 34-37 | ✅ Complete | Context discovery, tokens, compaction, thinking |
 | 9 — CodingSession | 38-40 | ✅ Complete | Session orchestrator, persistence, manager |
 | — Enhanced Session | — | ✅ Complete | Per-project indexing, HTML/JSONL export, default sessions |
+| — Commands | — | ✅ Complete | Slash command registry, 18 builtin commands |
+| — OAuth | — | ✅ Complete | OpenAI Codex login flow with PKCE |
 | 10 — CLI & TUI | 41-44 | 🟡 Partial | CLI modes done, Ink TUI placeholder |
 
 ---
