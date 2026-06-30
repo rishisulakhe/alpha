@@ -4,7 +4,9 @@ export * from "./tools/write.ts";
 export * from "./tools/edit.ts";
 export * from "./tools/bash.ts";
 export * from "./config/paths.ts";
-export * from "./config/credentials.ts";
+// Re-export specific items from credentials (avoid OAuthCredential collision with oauth.ts)
+export { FileCredentialStore } from "./config/credentials.ts";
+export type { CredentialStore, OAuthCredential as StoredOAuthCredential } from "./config/credentials.ts";
 // Export specific items from providers to avoid conflicts
 export {
   type ProviderConfig,
@@ -36,6 +38,7 @@ export * from "./session.ts";
 export * from "./session-manager.ts";
 export * from "./session-export.ts";
 export * from "./commands.ts";
+export * from "./oauth.ts";
 export * from "./cli.ts";
 export * from "./rendering/index.ts";
 export * from "./tui/index.ts";
