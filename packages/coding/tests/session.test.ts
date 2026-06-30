@@ -138,6 +138,6 @@ describe("CodingSession.expandPromptText", () => {
 describe("CodingSession.contextTokenEstimate", () => {
   test("returns estimate", async () => {
     const s = await CodingSession.load(baseConfig());
-    expect(s.contextTokenEstimate.totalTokens).toBeGreaterThan(0);
+    expect(s.contextTokenEstimate).toBeGreaterThan(0);
   });
 });

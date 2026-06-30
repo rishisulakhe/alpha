@@ -29,9 +29,15 @@ import {
 } from "./context/compaction.ts";
 import { buildSystemPrompt } from "./prompt/system.ts";
 import type { ThinkingLevel } from "./thinking.ts";
-import { normalizeThinkingLevel } from "./thinking.ts";
+import { normalizeThinkingLevel, providerThinkingLevels } from "./thinking.ts";
 import { expandSkillInvocation } from "./resources/skills.ts";
 import { exportSessionArtifact, normalizeExportFormat } from "./session-export.ts";
+import {
+  CommandRegistry,
+  createDefaultCommandRegistry,
+  type CommandResult,
+  type CommandSession,
+} from "./commands.ts";
 
 // ---------------------------------------------------------------------------
 // CodingSessionConfig
@@ -54,6 +60,12 @@ export interface CodingSessionConfig {
   customSystemPrompt?: string;
   appendSystemPrompt?: string;
   maxTurns?: number;
+  /** Available models for the current provider */
+  availableModels?: readonly string[];
+  /** Available provider names */
+  availableProviders?: readonly string[];
+  /** Context window for the model */
+  contextWindowTokens?: number;
 }
 
 export interface BranchChoice {
@@ -67,7 +79,11 @@ export interface BranchChoice {
 // CodingSession
 // ---------------------------------------------------------------------------
 
-export class CodingSession {
+/**
+ * CodingSession is the central orchestrator for Alpha.
+ * It implements CommandSession for slash command support.
+ */
+export class CodingSession implements CommandSession {
   private _config: CodingSessionConfig;
   private _harness: AgentHarness;
   private _storage: SessionStorage;
@@ -81,6 +97,8 @@ export class CodingSession {
   private _providerName: string;
   private _sessionId: string;
   private _allEntries: SessionEntry[] = [];
+  private _commandRegistry: CommandRegistry;
+  private _sessionTitle: string | null = null;
 
   constructor(config: CodingSessionConfig) {
     const cwd = config.cwd;
@@ -113,6 +131,8 @@ export class CodingSession {
       tools: this._tools,
       maxTurns: config.maxTurns,
     });
+
+    this._commandRegistry = createDefaultCommandRegistry();
 
     // Wire persistence
     this._harness.subscribe((ev: AgentEvent) => {
@@ -169,11 +189,51 @@ export class CodingSession {
   get thinkingLevel(): ThinkingLevel { return this._thinkingLevel; }
   get isRunning(): boolean { return this._harness.isRunning; }
   get sessionId(): string { return this._sessionId; }
+  get sessionTitle(): string | null { return this._sessionTitle; }
+
+  // -- CommandSession interface ------------------------------------------------
+
+  get availableModels(): readonly string[] {
+    return this._config.availableModels ?? [];
+  }
+
+  get availableProviders(): readonly string[] {
+    return this._config.availableProviders ?? [];
+  }
+
+  get contextWindowTokens(): number {
+    return this._config.contextWindowTokens ?? 128000;
+  }
+
+  get autoCompactTokenThreshold(): number | null {
+    return this._config.autoCompactTokenThreshold ?? null;
+  }
+
+  get availableThinkingLevels(): readonly ThinkingLevel[] {
+    return ["off", "minimal", "low", "medium", "high", "xhigh"];
+  }
+
+  get promptTemplates(): readonly PromptTemplate[] {
+    return this._promptTemplates;
+  }
+
+  get contextFiles(): readonly ProjectContextFile[] {
+    return this._contextFiles;
+  }
+
+  get skills(): readonly Skill[] {
+    return this._skills;
+  }
 
   cancel(): void { this._harness.cancel(); }
 
-  get contextTokenEstimate(): ContextUsageEstimate {
-    return estimateContextTokens(this._systemPrompt, [...this._harness.messages], this._tools);
+  get contextTokenEstimate(): number {
+    const estimate = estimateContextTokens(this._systemPrompt, [...this._harness.messages], this._tools);
+    return estimate.totalTokens;
+  }
+
+  reloadProviderSettings(): void {
+    // No-op by default - can be overridden
   }
 
   // -- Prompt -----------------------------------------------------------------
@@ -189,7 +249,7 @@ export class CodingSession {
     const threshold = this._config.autoCompactTokenThreshold;
     if (threshold != null) {
       const usage = this.contextTokenEstimate;
-      if (usage.totalTokens > threshold) {
+      if (usage > threshold) {
         await this._compactImpl();
       }
     }
@@ -203,12 +263,14 @@ export class CodingSession {
 
   // -- Model/Provider management -----------------------------------------------
 
-  async setModel(model: string): Promise<void> {
+  setModel(model: string): void {
     this._model = model;
-    await this._appendEntry({
+    this._harness.setModel(model);
+    // Persist asynchronously
+    this._appendEntry({
       type: "model_change", id: newEntryId(), parentId: this._lastParentId(),
       timestamp: currentTimestamp(), model,
-    });
+    }).catch(() => {});
   }
 
   async setProvider(providerName: string): Promise<void> {
@@ -255,8 +317,53 @@ export class CodingSession {
 
   // -- Commands ---------------------------------------------------------------
 
-  async handleCommand(_text: string): Promise<{ handled: boolean; message?: string }> {
-    return { handled: false };
+  /**
+   * Handle a slash command text. Returns the result for the TUI to process.
+   */
+  handleCommand(text: string): CommandResult {
+    return this._commandRegistry.execute(this, text);
+  }
+
+  /**
+   * Apply a command result to the session. Call after handling a command result.
+   */
+  async applyCommandResult(result: CommandResult): Promise<string | undefined> {
+    if (result.exitRequested) {
+      return result.message;
+    }
+
+    if (result.newSessionRequested) {
+      await this.newSession();
+      return "Started new session.";
+    }
+
+    if (result.compactSummary !== undefined) {
+      await this.compact(result.compactSummary);
+      return "Compaction complete.";
+    }
+
+    if (result.exportRequested) {
+      const path = await this.export(result.exportDestination, result.exportFormat);
+      return `Exported to: ${path}`;
+    }
+
+    if (result.thinkingLevel) {
+      await this.setThinkingLevel(result.thinkingLevel);
+      return `Thinking level: ${result.thinkingLevel}`;
+    }
+
+    if (result.message) {
+      return result.message;
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Get the command registry for autocompletion.
+   */
+  get commandRegistry(): CommandRegistry {
+    return this._commandRegistry;
   }
 
   async runTerminalCommand(_command: string, _addToContext: boolean): Promise<void> {}

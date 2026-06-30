@@ -93,7 +93,7 @@ function AlphaTuiApp() {
         provider: providerName,
         model: session.model,
         thinking: session.thinkingLevel,
-        tokens: session.contextTokenEstimate.totalTokens,
+        tokens: session.contextTokenEstimate,
       });
     }
   }, [session, providerName]);
@@ -135,7 +135,7 @@ function AlphaTuiApp() {
         return;
       }
       if (cmd === "/session") {
-        const tokens = sessionRef.current.contextTokenEstimate.totalTokens;
+        const tokens = sessionRef.current.contextTokenEstimate;
         addBlock({ id: nextId(), role: "status", content: `Context: ~${tokens} tokens across ${sessionRef.current.messages.length} messages` });
         setRunning(false);
         return;
@@ -209,7 +209,7 @@ function AlphaTuiApp() {
     setRunning(false);
     // Update token status
     if (sessionRef.current) {
-      setStatus((prev) => ({ ...prev, tokens: sessionRef.current!.contextTokenEstimate.totalTokens }));
+      setStatus((prev) => ({ ...prev, tokens: sessionRef.current!.contextTokenEstimate }));
     }
   }, [input, addBlock, updateLastBlock, status.thinking]);
 

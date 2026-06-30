@@ -146,6 +146,18 @@ export class AgentHarness {
     this._messages = [...messages];
   }
 
+  // -- Model management --------------------------------------------------------
+
+  /** Update the model identifier. */
+  setModel(model: string): void {
+    this._config = { ...this._config, model };
+  }
+
+  /** Get the current model. */
+  get model(): string {
+    return this._config.model;
+  }
+
   // -- Queue management --------------------------------------------------------
 
   steer(content: string): void {
