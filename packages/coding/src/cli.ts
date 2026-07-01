@@ -114,19 +114,12 @@ async function handlePrintMode(args: ParsedArgs): Promise<void> {
   const outputFormat = args.output ?? "text";
 
   // Create provider with specified options
-  const provider = createProvider({
+  const { provider, model, providerName } = createProvider({
     providerName: args.provider,
     model: args.model,
-  thinkingLevel: "medium",
-  envOnly: false, // Use full configuration
+    thinkingLevel: "medium",
+    envOnly: false, // Use full configuration
   });
-
-  // Determine model and provider name for config
-  const paths = getAlphaPaths();
-  const settings = loadProviderSettings(paths.providersFile);
-  const providerName = args.provider ?? settings.defaultProvider;
-  const providerConfig = settings.providers.find((p) => p.name === providerName);
-  const model = args.model ?? providerConfig?.defaultModel ?? "gpt-4.1";
 
   const config: CodingSessionConfig = {
     provider,

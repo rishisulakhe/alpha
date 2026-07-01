@@ -118,6 +118,14 @@ export const builtinProviderCatalog: ProviderConfig[] = [
     models: ["cohere/north-mini-code:free", "meta-llama/llama-3.3-70b-instruct:free", "google/gemini-2.0-flash-exp:free"],
     defaultModel: "cohere/north-mini-code:free",
   },
+  {
+    kind: "openai_compatible",
+    name: "nvidia",
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+    apiKeyEnv: "NVIDIA_API_KEY",
+    models: ["nvidia/nemotron-3-super-120b-a12b"],
+    defaultModel: "nvidia/nemotron-3-super-120b-a12b",
+  }
 ];
 
 // ---------------------------------------------------------------------------

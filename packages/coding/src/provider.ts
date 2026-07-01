@@ -63,17 +63,25 @@ export interface ProviderOptions {
   envOnly?: boolean;
 }
 
+export interface ProviderResult {
+  provider: ModelProvider;
+  model: string;
+  providerName: string;
+}
+
 // ---------------------------------------------------------------------------
-// createProvider — create a configured provider
+// createProvider — create a configured provider and return selection info
 // ---------------------------------------------------------------------------
 
-export function createProvider(opts?: ProviderOptions): ModelProvider {
+export function createProvider(opts?: ProviderOptions): ProviderResult {
   ensureAlphaDirectories();
   const paths = getAlphaPaths();
 
   // If envOnly mode or explicit API key provided, use environment-only config
   if (opts?.envOnly || opts?.apiKey) {
-    return createProviderFromEnv(opts);
+    const provider = createProviderFromEnv(opts);
+    const model = opts.model ?? process.env.ALPHA_MODEL ?? "gpt-4.1";
+    return { provider, model, providerName: "env" };
   }
 
   // Load full provider configuration
@@ -83,11 +91,15 @@ export function createProvider(opts?: ProviderOptions): ModelProvider {
   // If a specific provider is requested, use it
   if (opts?.providerName) {
     try {
-      const { config, model } = resolveProviderSelection(settings, opts.providerName, opts.model) ?? {};
-      if (!config) {
+      const resolved = resolveProviderSelection(settings, opts.providerName, opts.model);
+      if (!resolved) {
         // Provider not found in config — check if it's a built-in with env credentials
-        return createProviderFromEnv(opts);
+        const envProvider = createProviderFromEnv(opts);
+        const envModel = opts.model ?? process.env.ALPHA_MODEL ?? "gpt-4.1";
+        return { provider: envProvider, model: envModel, providerName: "env" };
       }
+
+      const { config, model: resolvedModel } = resolved;
 
       // Check credentials
       if (!providerHasUsableCredentials(config, credentialStore)) {
@@ -99,11 +111,12 @@ export function createProvider(opts?: ProviderOptions): ModelProvider {
         );
       }
 
-      return createModelProvider(config, {
+      const provider = createModelProvider(config, {
         credentialStore,
-        model,
+        model: resolvedModel,
         thinkingLevel: opts.thinkingLevel,
       });
+      return { provider, model: resolvedModel, providerName: config.name };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[alpha] Provider error: ${msg}\n`);
@@ -116,18 +129,19 @@ export function createProvider(opts?: ProviderOptions): ModelProvider {
   if (selection) {
     const { config, model } = selection;
     process.stderr.write(`[alpha] Using ${config.name}:${model}\n`);
-    return createModelProvider(config, {
+    const provider = createModelProvider(config, {
       credentialStore,
       model,
       thinkingLevel: opts?.thinkingLevel,
     });
+    return { provider, model, providerName: config.name };
   }
 
   // No credentials found, use demo mode
   process.stderr.write(
     "[alpha] No API key found. Using demo mode. Set OPENROUTER_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY for a real LLM.\n",
   );
-  return echoProvider(opts?.model);
+  return { provider: echoProvider(opts?.model), model: opts?.model ?? "echo", providerName: "echo" };
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +174,19 @@ function createProviderFromEnv(opts?: ProviderOptions): ModelProvider {
         "HTTP-Referer": "https://alpha.dev",
         "X-Title": "Alpha Coding Agent",
       },
+      maxRetries: 2,
+      maxRetryDelaySeconds: 30,
+      timeoutSeconds: 120,
+    });
+  }
+
+  if(process.env.NVIDIA_API_KEY) {
+    const model = process.env.ALPHA_MODEL ?? "nvidia/nemotron-3-super-120b-a12b";
+    const baseUrl = opts?.baseUrl ?? "https://integrate.api.nvidia.com/v1";
+    process.stderr.write(`[alpha] Using NVIDIA with model=${model}\n`);
+    return new OpenAICompatibleProvider({
+      apiKey: process.env.NVIDIA_API_KEY,
+      baseUrl,
       maxRetries: 2,
       maxRetryDelaySeconds: 30,
       timeoutSeconds: 120,

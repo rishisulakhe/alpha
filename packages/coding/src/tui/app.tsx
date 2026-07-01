@@ -45,20 +45,18 @@ function useAgentSession() {
   const [providerName, setProviderName] = useState("demo");
 
   useEffect(() => {
-    const provider = createProvider();
-    const isReal = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
-    const model = isReal ? (process.env.ALPHA_MODEL ?? "openai/gpt-4o") : "echo";
+    const { provider, model, providerName: resolvedProviderName } = createProvider();
 
     const config: CodingSessionConfig = {
       provider,
       model,
       cwd: process.cwd(),
       storage: new InMemorySessionStorage(),
-      providerName: isReal ? "openrouter" : "demo",
+      providerName: resolvedProviderName,
     };
     CodingSession.load(config).then((s) => {
       sessionRef.current = s;
-      setProviderName(isReal ? "openrouter" : "demo");
+      setProviderName(resolvedProviderName);
       setReady(true);
     });
   }, []);
