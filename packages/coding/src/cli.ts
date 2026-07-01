@@ -4,6 +4,7 @@ import { CodingSession, type CodingSessionConfig } from "./session.ts";
 import { SessionManager } from "./session-manager.ts";
 import { createProvider, loadProviderSettings, getAlphaPaths, ensureAlphaDirectories } from "./provider.ts";
 import { createEventRenderer } from "./rendering/index.ts";
+import { createCodingTools } from "./tools/types.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -121,10 +122,14 @@ async function handlePrintMode(args: ParsedArgs): Promise<void> {
     envOnly: false, // Use full configuration
   });
 
+  // Create coding tools (bash, read, write, edit)
+  const tools = await createCodingTools(cwd);
+
   const config: CodingSessionConfig = {
     provider,
     model,
     cwd,
+    tools,
     storage: new InMemorySessionStorage(),
     providerName,
   };

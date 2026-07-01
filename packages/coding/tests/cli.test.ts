@@ -9,6 +9,13 @@ describe("CLI", () => {
     const proc = Bun.spawn(["bun", "run", "src/cli.ts", "-p", "Hello world"], {
       cwd: PKG_DIR,
       stdout: "pipe",
+      env: {
+        ...process.env,
+        NVIDIA_API_KEY: "",
+        OPENAI_API_KEY: "",
+        OPENROUTER_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+      },
     });
     const output = await new Response(proc.stdout).text();
     expect(output.length).toBeGreaterThan(0);
