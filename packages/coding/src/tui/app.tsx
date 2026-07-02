@@ -30,6 +30,31 @@ interface AppStatus {
 }
 
 // ---------------------------------------------------------------------------
+// useScroll hook
+// ---------------------------------------------------------------------------
+
+function useScroll(itemCount: number, viewportHeight: number) {
+  const [scrollOffset, setScrollOffset] = useState(0);
+
+  // Auto-scroll to bottom when new items arrive
+  useEffect(() => {
+    const maxOffset = Math.max(0, itemCount - viewportHeight);
+    setScrollOffset(maxOffset);
+  }, [itemCount, viewportHeight]);
+
+  const scrollUp = useCallback(() => {
+    setScrollOffset((prev) => Math.max(0, prev - 1));
+  }, []);
+
+  const scrollDown = useCallback(() => {
+    const maxOffset = Math.max(0, itemCount - viewportHeight);
+    setScrollOffset((prev) => Math.min(maxOffset, prev + 1));
+  }, [itemCount, viewportHeight]);
+
+  return { scrollOffset, scrollUp, scrollDown };
+}
+
+// ---------------------------------------------------------------------------
 // useAgentSession hook
 // ---------------------------------------------------------------------------
 
@@ -66,16 +91,29 @@ function TranscriptView({
   items,
   assistantBuffer,
   running,
+  scrollOffset,
+  height,
 }: {
   items: ChatItem[];
   assistantBuffer: string;
   running: boolean;
+  scrollOffset: number;
+  height: number;
 }) {
-  // Show last ~20 items for performance
-  const visibleItems = items.slice(-20);
+  // Calculate visible items based on scroll position
+  const visibleItems = items.slice(scrollOffset, scrollOffset + height);
+
+  // Show scroll indicator if there are more items
+  const hasMoreAbove = scrollOffset > 0;
+  const hasMoreBelow = scrollOffset + height < items.length;
 
   return (
-    <Box flexDirection="column" flexGrow={1} paddingX={1} overflowY="hidden">
+    <Box flexDirection="column" flexGrow={1} paddingX={1}>
+      {/* Scroll indicator */}
+      {hasMoreAbove && (
+        <Text dimColor>↑ {scrollOffset} more above</Text>
+      )}
+
       {visibleItems.length === 0 && !running ? (
         <Box flexDirection="column">
           <Text dimColor>Welcome to Alpha! Type a prompt to begin.</Text>
@@ -93,7 +131,7 @@ function TranscriptView({
       {assistantBuffer && (
         <Box flexDirection="column">
           <Text color="green">
-            {"→ "}
+            {"← "}
             {assistantBuffer}
           </Text>
         </Box>
@@ -104,6 +142,11 @@ function TranscriptView({
         <Box>
           <ActivityIndicator active={running} />
         </Box>
+      )}
+
+      {/* Scroll indicator */}
+      {hasMoreBelow && (
+        <Text dimColor>↓ {items.length - scrollOffset - height} more below</Text>
       )}
     </Box>
   );
@@ -181,6 +224,8 @@ function PromptInput({
   running,
   isSlashCommand,
   isTerminalCommand,
+  onScrollUp,
+  onScrollDown,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -188,11 +233,24 @@ function PromptInput({
   running: boolean;
   isSlashCommand: boolean;
   isTerminalCommand: boolean;
+  onScrollUp: () => void;
+  onScrollDown: () => void;
 }) {
   useInput(
     (input, key) => {
       if (key.return) {
         onSubmit();
+        return;
+      }
+
+      // Handle scrolling
+      if (key.upArrow) {
+        onScrollUp();
+        return;
+      }
+
+      if (key.downArrow) {
+        onScrollDown();
         return;
       }
 
@@ -248,6 +306,16 @@ function AlphaTuiApp() {
 
   // Force re-render helper
   const refresh = useCallback(() => forceUpdate({}), []);
+
+  // Calculate viewport height for transcript
+  const termHeight = process.stdout.rows ?? 24;
+  const transcriptHeight = Math.max(5, termHeight - 8); // Reserve space for header, dividers, prompt, status
+
+  // Scroll handling
+  const { scrollOffset, scrollUp, scrollDown } = useScroll(
+    stateRef.current.items.length,
+    transcriptHeight,
+  );
 
   // Update status when session is ready
   useEffect(() => {
@@ -403,6 +471,8 @@ function AlphaTuiApp() {
         items={state.items}
         assistantBuffer={state.assistantBuffer}
         running={state.running}
+        scrollOffset={scrollOffset}
+        height={transcriptHeight}
       />
 
       {/* Divider */}
@@ -416,6 +486,8 @@ function AlphaTuiApp() {
         running={state.running}
         isSlashCommand={isSlashCommand}
         isTerminalCommand={isTerminalCommand}
+        onScrollUp={scrollUp}
+        onScrollDown={scrollDown}
       />
 
       {/* Bottom status */}
