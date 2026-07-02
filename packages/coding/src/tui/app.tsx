@@ -1,22 +1,26 @@
+/**
+ * Main TUI application for Alpha coding agent.
+ *
+ * A minimal Ink-based TUI that displays:
+ * - Streaming assistant messages
+ * - Tool call status and results
+ * - Thinking blocks
+ * - Error messages
+ */
+
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { render, Box, Text, useInput } from "ink";
+import { render, Box, Text, useInput, useApp } from "ink";
 import { InMemorySessionStorage } from "@alpha/agent";
 import { CodingSession, type CodingSessionConfig } from "../session.ts";
-import { createProvider, echoProvider } from "../provider.ts";
+import { createProvider } from "../provider.ts";
 import type { AgentEvent } from "@alpha/agent";
+import { TuiState, type ChatItem } from "./state.ts";
+import { TuiEventAdapter } from "./adapter.ts";
+import { CompactInfoBar, ActivityIndicator, StatusBar } from "./sidebar.tsx";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface ChatBlock {
-  id: number;
-  role: "user" | "assistant" | "tool" | "thinking" | "error" | "status";
-  content: string;
-  collapsed?: boolean;
-  toolName?: string;
-  toolOk?: boolean;
-}
 
 interface AppStatus {
   provider: string;
@@ -24,16 +28,6 @@ interface AppStatus {
   thinking: string;
   tokens: number;
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-const termColumns = (process.stdout as unknown as { columns?: number }).columns ?? 80;
-const termRows = (process.stdout as unknown as { rows?: number }).rows ?? 24;
-
-let _nextId = 1;
-function nextId() { return _nextId++; }
 
 // ---------------------------------------------------------------------------
 // useAgentSession hook
@@ -65,12 +59,182 @@ function useAgentSession() {
 }
 
 // ---------------------------------------------------------------------------
-// AlphaTuiApp
+// TranscriptView component
+// ---------------------------------------------------------------------------
+
+function TranscriptView({
+  items,
+  assistantBuffer,
+  running,
+}: {
+  items: ChatItem[];
+  assistantBuffer: string;
+  running: boolean;
+}) {
+  // Show last ~20 items for performance
+  const visibleItems = items.slice(-20);
+
+  return (
+    <Box flexDirection="column" flexGrow={1} paddingX={1} overflowY="hidden">
+      {visibleItems.length === 0 && !running ? (
+        <Box flexDirection="column">
+          <Text dimColor>Welcome to Alpha! Type a prompt to begin.</Text>
+          <Text dimColor> </Text>
+          <Text dimColor>Commands: /help /quit /session /model /thinking</Text>
+          <Text dimColor>Shell: !command (add to context) or !!command (hidden)</Text>
+        </Box>
+      ) : (
+        visibleItems.map((item) => (
+          <ChatItemView key={item.id} item={item} />
+        ))
+      )}
+
+      {/* Show assistant buffer while streaming */}
+      {assistantBuffer && (
+        <Box flexDirection="column">
+          <Text color="green">
+            {"→ "}
+            {assistantBuffer}
+          </Text>
+        </Box>
+      )}
+
+      {/* Activity indicator */}
+      {running && !assistantBuffer && items[items.length - 1]?.role !== "tool" && (
+        <Box>
+          <ActivityIndicator active={running} />
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ChatItemView component
+// ---------------------------------------------------------------------------
+
+function ChatItemView({ item }: { item: ChatItem }) {
+  switch (item.role) {
+    case "user":
+      return (
+        <Box flexDirection="column">
+          <Text color="cyan">{`→ ${item.text}`}</Text>
+        </Box>
+      );
+
+    case "assistant":
+      return (
+        <Box flexDirection="column">
+          <Text color="green">{`← ${item.text}`}</Text>
+        </Box>
+      );
+
+    case "thinking":
+      return (
+        <Box flexDirection="column">
+          <Text color="magenta" dimColor italic>
+            {item.collapsed ? "💭 " : ""}
+            {item.text.slice(0, 200)}
+            {item.text.length > 200 ? "…" : ""}
+          </Text>
+        </Box>
+      );
+
+    case "tool":
+      return (
+        <Box flexDirection="column">
+          <Text color="yellow" dimColor>
+            {`⚙ ${item.text}`}
+          </Text>
+        </Box>
+      );
+
+    case "error":
+      return (
+        <Box flexDirection="column">
+          <Text color="red" bold>
+            {`✗ ${item.text}`}
+          </Text>
+        </Box>
+      );
+
+    case "status":
+      return (
+        <Box flexDirection="column">
+          <Text dimColor>{`• ${item.text}`}</Text>
+        </Box>
+      );
+
+    default:
+      return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PromptInput component
+// ---------------------------------------------------------------------------
+
+function PromptInput({
+  value,
+  onChange,
+  onSubmit,
+  running,
+  isSlashCommand,
+  isTerminalCommand,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onSubmit: () => void;
+  running: boolean;
+  isSlashCommand: boolean;
+  isTerminalCommand: boolean;
+}) {
+  useInput(
+    (input, key) => {
+      if (key.return) {
+        onSubmit();
+        return;
+      }
+
+      if (key.backspace || key.delete) {
+        onChange(value.slice(0, -1));
+        return;
+      }
+
+      // Handle character input
+      if (!key.ctrl && !key.meta && input.length === 1) {
+        onChange(value + input);
+      }
+    },
+    { isActive: !running },
+  );
+
+  const promptSymbol = isSlashCommand ? "⌘" : isTerminalCommand ? "!" : "τ";
+
+  return (
+    <Box paddingX={1}>
+      <Text color={isSlashCommand ? "yellow" : isTerminalCommand ? "blue" : "green"} bold>
+        {promptSymbol}
+        {" "}
+      </Text>
+      <Text>{value}</Text>
+      {!running && <Text dimColor>█</Text>}
+    </Box>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AlphaTuiApp main component
 // ---------------------------------------------------------------------------
 
 function AlphaTuiApp() {
   const { session, ready, providerName } = useAgentSession();
-  const [blocks, setBlocks] = useState<ChatBlock[]>([]);
+  const { exit } = useApp();
+
+  // Use TuiState for managing display state
+  const stateRef = useRef(new TuiState());
+  const [, forceUpdate] = useState({});
+
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<AppStatus>({
     provider: "loading",
@@ -78,11 +242,12 @@ function AlphaTuiApp() {
     thinking: "medium",
     tokens: 0,
   });
-  const [running, setRunning] = useState(false);
-  const blocksRef = useRef(blocks);
-  blocksRef.current = blocks;
-  const sessionRef = useRef(session);
-  sessionRef.current = session;
+
+  const isSlashCommand = input.startsWith("/");
+  const isTerminalCommand = input.startsWith("!");
+
+  // Force re-render helper
+  const refresh = useCallback(() => forceUpdate({}), []);
 
   // Update status when session is ready
   useEffect(() => {
@@ -96,211 +261,171 @@ function AlphaTuiApp() {
     }
   }, [session, providerName]);
 
-  const isSlashCommand = input.startsWith("/");
-  const isTerminalCommand = input.startsWith("!");
-
-  const addBlock = useCallback((block: ChatBlock) => {
-    setBlocks((prev) => [...prev, block]);
-  }, []);
-
-  const updateLastBlock = useCallback((updater: (b: ChatBlock) => ChatBlock) => {
-    setBlocks((prev) => {
-      const copy = [...prev];
-      if (copy.length > 0) {
-        copy[copy.length - 1] = updater(copy[copy.length - 1]!);
+  // Global keybindings (work even when running)
+  useInput(
+    (input, key) => {
+      // Escape cancels running operation
+      if (key.escape) {
+        if (stateRef.current.running && session) {
+          session.cancel();
+          stateRef.current.addStatus("Cancelled.");
+          refresh();
+        }
+        return;
       }
-      return copy;
-    });
-  }, []);
+
+      // Ctrl+C or Ctrl+D exits
+      if (key.ctrl && (input === "c" || input === "d")) {
+        exit();
+        return;
+      }
+    },
+    { isActive: stateRef.current.running },
+  );
 
   // Handle prompt submission
   const handleSubmit = useCallback(async () => {
-    if (!input.trim() || !sessionRef.current) return;
+    if (!input.trim() || !session) return;
 
-    const text = input;
+    const text = input.trim();
     setInput("");
-    setRunning(true);
 
-    // Add user message block
-    addBlock({ id: nextId(), role: "user", content: text });
+    const state = stateRef.current;
 
     // Handle slash commands locally
     if (text.startsWith("/")) {
-      const cmd = text.split(/\s+/)[0];
-      if (cmd === "/quit") {
-        addBlock({ id: nextId(), role: "status", content: "Goodbye! (press Ctrl+D to exit)" });
-        setRunning(false);
+      const cmd = text.split(/\s+/)[0]?.toLowerCase();
+
+      if (cmd === "/quit" || cmd === "/exit") {
+        state.addStatus("Goodbye!");
+        refresh();
+        setTimeout(() => exit(), 500);
         return;
       }
+
+      if (cmd === "/help") {
+        state.addStatus("Commands: /quit /help /session /model /thinking /clear");
+        refresh();
+        return;
+      }
+
       if (cmd === "/session") {
-        const tokens = sessionRef.current.contextTokenEstimate;
-        addBlock({ id: nextId(), role: "status", content: `Context: ~${tokens} tokens across ${sessionRef.current.messages.length} messages` });
-        setRunning(false);
+        state.addStatus(
+          `Session: ${session.sessionId?.slice(0, 16) ?? "none"} | Model: ${session.model} | Tokens: ~${session.contextTokenEstimate}`,
+        );
+        refresh();
         return;
       }
+
+      if (cmd === "/clear") {
+        state.clear();
+        refresh();
+        return;
+      }
+
+      if (cmd === "/model") {
+        state.addStatus(`Current model: ${session.model}`);
+        refresh();
+        return;
+      }
+
       if (cmd === "/thinking") {
-        addBlock({ id: nextId(), role: "status", content: `Thinking level: ${status.thinking}` });
-        setRunning(false);
+        state.addStatus(`Thinking level: ${session.thinkingLevel}`);
+        refresh();
         return;
       }
     }
 
-    // Terminal command
+    // Handle terminal commands
     if (text.startsWith("!!")) {
-      // Run hidden (no context)
-      addBlock({ id: nextId(), role: "status", content: `[shell] ${text.slice(2)} (hidden)` });
-      setRunning(false);
+      state.addStatus(`[shell] ${text.slice(2)} (hidden, not added to context)`);
+      refresh();
       return;
     }
+
     if (text.startsWith("!")) {
-      addBlock({ id: nextId(), role: "status", content: `[shell] ${text.slice(1)}` });
-      setRunning(false);
+      state.addStatus(`[shell] ${text.slice(1)} (would run in terminal)`);
+      refresh();
       return;
     }
+
+    // Create adapter for this run
+    const adapter = new TuiEventAdapter(state);
+
+    // Run the prompt
+    state.running = true;
+    state.addUserMessage(text);
+    refresh();
 
     try {
-      addBlock({ id: nextId(), role: "assistant", content: "" });
-
-      for await (const event of sessionRef.current.prompt(text)) {
-        switch (event.type) {
-          case "message_delta":
-            updateLastBlock((b) => ({ ...b, content: b.content + event.text }));
-            break;
-          case "thinking_delta":
-            addBlock({ id: nextId(), role: "thinking", content: event.text, collapsed: true });
-            break;
-          case "tool_execution_start":
-            if (event.call) {
-              addBlock({ id: nextId(), role: "tool", content: `Running: ${event.call.name}...`, toolName: event.call.name });
-            }
-            break;
-          case "tool_execution_end": {
-            const result = event.result;
-            addBlock({
-              id: nextId(),
-              role: "tool",
-              content: result.content.slice(0, 200),
-              toolName: result.name,
-              toolOk: result.ok,
-            });
-            break;
-          }
-          case "retry":
-            addBlock({ id: nextId(), role: "status", content: `Retrying: ${event.message}` });
-            break;
-          case "error":
-            addBlock({ id: nextId(), role: "error", content: `Error: ${event.message}` });
-            break;
-          case "message_end": {
-            // Finalize assistant message
-            if (event.message.role === "assistant") {
-              updateLastBlock((b) => ({ ...b, content: event.message.content }));
-            }
-            break;
-          }
-        }
+      for await (const event of session.prompt(text)) {
+        adapter.apply(event);
+        refresh();
       }
     } catch (err) {
-      addBlock({ id: nextId(), role: "error", content: `Error: ${err instanceof Error ? err.message : String(err)}` });
+      const message = err instanceof Error ? err.message : String(err);
+      state.addError(message);
+      refresh();
     }
 
-    setRunning(false);
-    // Update token status
-    if (sessionRef.current) {
-      setStatus((prev) => ({ ...prev, tokens: sessionRef.current!.contextTokenEstimate }));
-    }
-  }, [input, addBlock, updateLastBlock, status.thinking]);
+    state.running = false;
 
-  // Keybindings
-  useInput((_value, key) => {
-    if (key.escape) {
-      if (running && sessionRef.current) {
-        sessionRef.current.cancel();
-        setRunning(false);
-        addBlock({ id: nextId(), role: "status", content: "Cancelled." });
-      }
-      return;
-    }
-
-    if (key.ctrl && (_value === "c" || _value === "d" || _value === "C")) {
-      process.exit(0);
-    }
-
-    if (key.return) {
-      handleSubmit();
-      return;
-    }
-
-    if (key.backspace || key.delete) {
-      setInput((prev) => prev.slice(0, -1));
-      return;
-    }
-
-    if (typeof _value === "string" && _value.length === 1 && !key.ctrl && !key.meta) {
-      setInput((prev) => prev + _value);
-    }
-  });
-
-  // Visible messages (last ~15 blocks)
-  const visibleBlocks = blocks.slice(-15);
+    // Update token count
+    setStatus((prev) => ({ ...prev, tokens: session.contextTokenEstimate }));
+    refresh();
+  }, [input, session, refresh, exit]);
 
   if (!ready) {
-    return <Text>Loading Alpha...</Text>;
+    return (
+      <Box flexDirection="column" padding={1}>
+        <Text dimColor>Loading Alpha...</Text>
+      </Box>
+    );
   }
 
+  const state = stateRef.current;
+
   return (
-    <Box flexDirection="column" height={termRows}>
-      {/* Transcript */}
-      <Box flexDirection="column" flexGrow={1} paddingX={1}>
-        {visibleBlocks.length === 0 && !running ? (
-          <Text dimColor>Welcome to Alpha! Type a prompt to begin.</Text>
-        ) : (
-          visibleBlocks.map((b) => (
-            <Box key={b.id} flexDirection="column">
-              <Text
-                color={
-                  b.role === "user" ? "cyan" :
-                  b.role === "assistant" ? "green" :
-                  b.role === "error" ? "red" :
-                  b.role === "thinking" ? "magenta" :
-                  b.role === "tool" ? (b.toolOk === false ? "red" : "yellow") :
-                  "gray"
-                }
-                dimColor={b.role === "thinking" || b.role === "tool"}
-                italic={b.role === "thinking"}
-              >
-                {b.role === "user" ? "> " : b.role === "tool" ? `[tool:${b.toolName ?? ""}] ` : b.role === "thinking" ? "[thinking] " : b.role === "error" ? "[error] " : ""}
-                {b.content}
-              </Text>
-            </Box>
-          ))
-        )}
-        {running && (
-          <Text color="yellow" dimColor>⌛ Working...</Text>
-        )}
-      </Box>
+    <Box flexDirection="column" height={process.stdout.rows ?? 24}>
+      {/* Top status bar */}
+      <CompactInfoBar
+        provider={status.provider}
+        model={status.model}
+        tokens={status.tokens}
+        thinkingLevel={status.thinking}
+      />
 
       {/* Divider */}
-      <Text color="gray">{'─'.repeat(termColumns - 2)}</Text>
+      <Text dimColor>{"─".repeat((process.stdout.columns ?? 80) - 2)}</Text>
 
-      {/* Prompt */}
-      <Box paddingX={1} paddingY={0}>
-        <Text color={isSlashCommand ? "yellow" : isTerminalCommand ? "blue" : "green"}>
-          {isSlashCommand ? "⌘ " : isTerminalCommand ? "! " : "τ "}
-        </Text>
-        <Text>{input}</Text>
-        {!running && <Text color="gray">█</Text>}
-      </Box>
+      {/* Main transcript area */}
+      <TranscriptView
+        items={state.items}
+        assistantBuffer={state.assistantBuffer}
+        running={state.running}
+      />
 
-      {/* Status bar */}
+      {/* Divider */}
+      <Text dimColor>{"─".repeat((process.stdout.columns ?? 80) - 2)}</Text>
+
+      {/* Prompt input */}
+      <PromptInput
+        value={input}
+        onChange={setInput}
+        onSubmit={handleSubmit}
+        running={state.running}
+        isSlashCommand={isSlashCommand}
+        isTerminalCommand={isTerminalCommand}
+      />
+
+      {/* Bottom status */}
       <Box paddingX={1} flexDirection="row" justifyContent="space-between">
         <Box>
-          <Text dimColor>
-            {status.provider}:{status.model} | {status.thinking}
-          </Text>
-          {running && <Text color="yellow"> ●</Text>}
+          {state.running && <ActivityIndicator active={true} />}
         </Box>
-        <Text dimColor>tokens: ~{status.tokens}</Text>
+        <Text dimColor>
+          tokens: ~{status.tokens} | Esc: cancel | Ctrl+D: quit
+        </Text>
       </Box>
     </Box>
   );

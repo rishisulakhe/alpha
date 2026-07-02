@@ -95,16 +95,13 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
 
   // Default: TUI placeholder
   console.log("Alpha — A TypeScript coding-agent harness");
-  console.log("TUI not yet implemented. Use -p 'prompt' for print mode.");
   console.log("");
-  console.log("Usage:");
-  console.log("  alpha -p 'your prompt'     Non-interactive print mode");
-  console.log("  alpha --provider openai     Set provider");
-  console.log("  alpha --model gpt-4         Set model");
-  console.log("  alpha --output json         Output format (text, json, transcript)");
-  console.log("  alpha sessions              List sessions");
-  console.log("  alpha providers             List configured providers");
-  console.log("  alpha export [path]         Export session");
+  console.log("Starting TUI...");
+  console.log("");
+
+  // Import and run TUI
+  const { runTuiApp } = await import("./tui/app.tsx");
+  runTuiApp();
 }
 
 // ---------------------------------------------------------------------------
