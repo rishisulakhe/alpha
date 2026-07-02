@@ -47,22 +47,15 @@ export class TuiEventAdapter {
         if (message.role === "user") {
           this.state.addUserMessage(message.content);
         } else if (message.role === "assistant") {
-          // If the message has tool calls, add them
-          if (message.tool_calls && message.tool_calls.length > 0) {
-            // Flush any accumulated assistant buffer first
-            this.state.flushAssistantBuffer();
-            // Add each tool call
-            for (const tc of message.tool_calls) {
-              this.state.addToolCall(tc);
-            }
-          } else {
-            // Regular message - use content or buffer
+          // Tool calls are handled by tool_execution_start
+          // Only add text content here
+          if (!message.tool_calls || message.tool_calls.length === 0) {
             const text = message.content || this.state.assistantBuffer;
             if (text) {
               this.state.addAssistantMessage(text);
             }
-            this.state.assistantBuffer = "";
           }
+          this.state.assistantBuffer = "";
         } else if (message.role === "tool") {
           // Tool messages are handled by tool_execution_end
         }
