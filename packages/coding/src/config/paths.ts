@@ -1,6 +1,5 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
 import { mkdirSync, existsSync } from "node:fs";
 
 const HOME = join(homedir(), ".alpha");
@@ -44,25 +43,14 @@ export function ensureAlphaDirectories(): void {
   }
 }
 
-export function projectHash(cwd: string): string {
-  const normalized = cwd.replace(/\\/g, "/").replace(/\/+$/, "");
-  return createHash("sha256").update(normalized).digest("hex").slice(0, 6);
-}
-
-export function projectSlug(cwd: string): string {
-  return cwd
-    .replace(/\\/g, "/")
-    .replace(/^\/+/, "")
-    .replace(/\/+$/, "")
-    .replace(/[^a-zA-Z0-9\/_-]/g, "_")
-    .replace(/\//g, "-");
+export function encodeCwd(cwd: string): string {
+  return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 }
 
 export function projectSessionDir(cwd: string, paths?: AlphaPaths): string {
-  const slug = projectSlug(cwd);
-  const hash = projectHash(cwd);
+  const encoded = encodeCwd(cwd);
   const sessionsDir = paths?.sessionsDir ?? join(HOME, "sessions");
-  return join(sessionsDir, `${slug}-${hash}`);
+  return join(sessionsDir, encoded);
 }
 
 export function defaultSessionPath(cwd: string, paths?: AlphaPaths): string {

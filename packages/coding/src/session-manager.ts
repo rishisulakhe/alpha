@@ -1,45 +1,21 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { readdirSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import type { AlphaPaths } from "./config/paths.ts";
 import { getAlphaPaths, projectSessionDir } from "./config/paths.ts";
-
-// ---------------------------------------------------------------------------
-// SessionRecord
-// ---------------------------------------------------------------------------
+import { FsSessionStorage, type SessionMetadata } from "@alpha/agent";
 
 export interface SessionRecord {
-  /** Unique session identifier */
   id: string;
-  /** Working directory for the session */
   cwd: string;
-  /** Path to the session data file */
   path: string;
-  /** Model identifier */
-  model: string;
-  /** Provider name */
+  model?: string;
   providerName?: string;
-  /** Optional user-provided title */
-  title?: string;
-  /** Creation timestamp (Unix epoch seconds) */
+  name?: string;
   createdAt: number;
-  /** Last update timestamp (Unix epoch seconds) */
   updatedAt: number;
+  messageCount: number;
 }
 
-// ---------------------------------------------------------------------------
-// SessionManager
-// ---------------------------------------------------------------------------
-
-/**
- * Manages session records and indexes.
- *
- * Sessions are stored in per-project directories with JSONL index files.
- * The manager supports:
- * - Listing sessions (project-scoped or global)
- * - Creating new sessions
- * - Getting/resuming existing sessions
- * - Updating session metadata
- */
 export class SessionManager {
   private _paths: AlphaPaths;
 
@@ -47,26 +23,15 @@ export class SessionManager {
     this._paths = paths ?? getAlphaPaths();
   }
 
-  // ---------------------------------------------------------------------------
-  // Public API
-  // ---------------------------------------------------------------------------
-
-  /**
-   * List sessions, newest first.
-   * When cwd is provided, only sessions for that directory are returned.
-   */
   listSessions(cwd?: string): SessionRecord[] {
     const records = cwd
-      ? this._readProjectRecords(cwd)
-      : this._readAllRecords();
+      ? this._readProjectSessions(cwd)
+      : this._readAllSessions();
     return records.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
-  /**
-   * Get a session by ID.
-   */
   getSession(sessionId: string): SessionRecord | undefined {
-    for (const record of this._readAllRecords()) {
+    for (const record of this.listSessions()) {
       if (record.id === sessionId) {
         return record;
       }
@@ -74,233 +39,102 @@ export class SessionManager {
     return undefined;
   }
 
-  /**
-   * Get the most recently updated session for a working directory.
-   */
   latestSessionForCwd(cwd: string): SessionRecord | undefined {
-    const records = this.listSessions(cwd);
-    return records[0];
+    return this.listSessions(cwd)[0];
   }
 
-  /**
-   * Create a new session record.
-   */
-  createSession(opts: {
-    cwd: string;
-    model: string;
-    providerName?: string;
-    title?: string;
-    sessionId?: string;
-  }): SessionRecord {
-    const now = Date.now() / 1000;
-    const resolvedCwd = opts.cwd;
-    const id = opts.sessionId ?? _newId();
-    const projectDir = projectSessionDir(resolvedCwd, this._paths);
-    const sessionPath = join(projectDir, `${id}.jsonl`);
-
-    const record: SessionRecord = {
-      id,
-      cwd: resolvedCwd,
-      path: sessionPath,
-      model: opts.model,
-      providerName: opts.providerName,
-      title: opts.title,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    this._upsert(record);
-    return record;
+  private _readProjectSessions(cwd: string): SessionRecord[] {
+    const sessionDir = projectSessionDir(cwd, this._paths);
+    return this._scanSessionDir(sessionDir);
   }
 
-  /**
-   * Get or create the default session for a project.
-   */
-  getOrCreateDefaultSession(opts: {
-    cwd: string;
-    model: string;
-    providerName?: string;
-  }): SessionRecord {
-    const resolvedCwd = opts.cwd;
-    const projectDir = projectSessionDir(resolvedCwd, this._paths);
-    const projectHash = basename(projectDir);
-    const sessionId = `default-${projectHash}`;
+  private _readAllSessions(): SessionRecord[] {
+    const records: SessionRecord[] = [];
+    const sessionsDir = this._paths.sessionsDir;
 
-    const existing = this.getSession(sessionId);
-    if (existing) {
-      return existing;
-    }
+    if (!existsSync(sessionsDir)) return records;
 
-    const now = Date.now() / 1000;
-    const sessionPath = join(projectDir, `${sessionId}.jsonl`);
+    try {
+      const entries = readdirSync(sessionsDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const projectDir = join(sessionsDir, entry.name);
+        records.push(...this._scanSessionDir(projectDir));
+      }
+    } catch {}
 
-    const record: SessionRecord = {
-      id: sessionId,
-      cwd: resolvedCwd,
-      path: sessionPath,
-      model: opts.model,
-      providerName: opts.providerName,
-      title: "Default session",
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    this._upsert(record);
-    return record;
+    return this._deduplicate(records);
   }
 
-  /**
-   * Update a session's metadata.
-   */
-  touchSession(
-    sessionId: string,
-    updates: {
-      model?: string;
-      providerName?: string;
-      title?: string;
-    },
-  ): SessionRecord | undefined {
-    const existing = this.getSession(sessionId);
-    if (!existing) {
-      return undefined;
-    }
-
-    const updated: SessionRecord = {
-      ...existing,
-      model: updates.model ?? existing.model,
-      providerName: updates.providerName ?? existing.providerName,
-      title: updates.title ?? existing.title,
-      updatedAt: Date.now() / 1000,
-    };
-
-    this._upsert(updated);
-    return updated;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Legacy compatibility
-  // ---------------------------------------------------------------------------
-
-  /**
-   * @deprecated Use getOrCreateDefaultSession instead
-   */
-  getDefaultSession(cwd: string, model: string, providerName: string): SessionRecord {
-    return this.getOrCreateDefaultSession({ cwd, model, providerName });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Private helpers
-  // ---------------------------------------------------------------------------
-
-  private _globalIndexPath(): string {
-    return join(this._paths.sessionsDir, "index.jsonl");
-  }
-
-  private _projectIndexPath(cwd: string): string {
-    return join(projectSessionDir(cwd, this._paths), "index.jsonl");
-  }
-
-  private _readIndex(indexPath: string): SessionRecord[] {
-    if (!existsSync(indexPath)) {
-      return [];
-    }
+  private _scanSessionDir(dir: string): SessionRecord[] {
+    if (!existsSync(dir)) return [];
 
     const records: SessionRecord[] = [];
     try {
-      const text = readFileSync(indexPath, "utf-8");
-      for (const line of text.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          const parsed = JSON.parse(trimmed);
-          // Convert ISO strings to numbers if needed (legacy support)
-          if (typeof parsed.createdAt === "string") {
-            parsed.createdAt = new Date(parsed.createdAt).getTime() / 1000;
-          }
-          if (typeof parsed.updatedAt === "string") {
-            parsed.updatedAt = new Date(parsed.updatedAt).getTime() / 1000;
-          }
-          records.push(parsed as SessionRecord);
-        } catch {
-          // Skip malformed lines
+      const files = readdirSync(dir);
+      for (const file of files) {
+        if (!file.endsWith(".jsonl")) continue;
+        const path = join(dir, file);
+        const metadata = this._readSessionMetadata(path);
+        if (metadata) {
+          records.push(metadata);
         }
       }
-    } catch {
-      return [];
-    }
+    } catch {}
 
     return records;
   }
 
-  private _readProjectRecords(cwd: string): SessionRecord[] {
-    const resolvedCwd = cwd;
-    const records = this._readIndex(this._projectIndexPath(resolvedCwd));
-
-    // Also include records from global index for this cwd (legacy support)
-    const globalRecords = this._readIndex(this._globalIndexPath());
-    for (const record of globalRecords) {
-      if (record.cwd === resolvedCwd) {
-        records.push(record);
-      }
-    }
-
-    return _deduplicateRecords(records);
-  }
-
-  private _readAllRecords(): SessionRecord[] {
-    const records = this._readIndex(this._globalIndexPath());
-
-    // Also scan project directories
+  private _readSessionMetadata(path: string): SessionRecord | null {
     try {
-      const sessionsDir = this._paths.sessionsDir;
-      if (existsSync(sessionsDir)) {
-        for (const entry of readdirSync(sessionsDir, { withFileTypes: true })) {
-          if (!entry.isDirectory()) continue;
-          const projectIndexPath = join(sessionsDir, entry.name, "index.jsonl");
-          if (existsSync(projectIndexPath)) {
-            records.push(...this._readIndex(projectIndexPath));
+      const content = readFileSync(path, "utf-8");
+      const lines = content.split("\n").filter(Boolean);
+      if (lines.length === 0) return null;
+
+      const header = JSON.parse(lines[0]!);
+      if (header.type !== "session") return null;
+
+      let lastTimestamp = header.timestamp;
+      let name: string | undefined;
+      let messageCount = 0;
+
+      for (const line of lines.slice(1)) {
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed.timestamp && parsed.timestamp > lastTimestamp) {
+            lastTimestamp = parsed.timestamp;
           }
-        }
+          if (parsed.type === "message") {
+            messageCount++;
+          }
+          if (parsed.type === "session_info" && parsed.name) {
+            name = parsed.name;
+          }
+        } catch {}
       }
+
+      return {
+        id: header.id,
+        cwd: header.cwd,
+        path,
+        createdAt: header.timestamp,
+        updatedAt: lastTimestamp,
+        messageCount,
+        name,
+      };
     } catch {
-      // Ignore errors scanning directories
-    }
-
-    return _deduplicateRecords(records);
-  }
-
-  private _writeIndex(indexPath: string, records: SessionRecord[]): void {
-    mkdirSync(dirname(indexPath), { recursive: true });
-    const content = records.map((r) => JSON.stringify(r)).join("\n");
-    writeFileSync(indexPath, content + (content ? "\n" : ""), "utf-8");
-  }
-
-  private _upsert(record: SessionRecord): void {
-    const projectDir = projectSessionDir(record.cwd, this._paths);
-    const indexPath = join(projectDir, "index.jsonl");
-    mkdirSync(projectDir, { recursive: true });
-
-    const records = this._readIndex(indexPath).filter((r) => r.id !== record.id);
-    records.push(record);
-    this._writeIndex(indexPath, records);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function _newId(): string {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-}
-
-function _deduplicateRecords(records: SessionRecord[]): SessionRecord[] {
-  const byId = new Map<string, SessionRecord>();
-  for (const record of records) {
-    const existing = byId.get(record.id);
-    if (!existing || record.updatedAt >= existing.updatedAt) {
-      byId.set(record.id, record);
+      return null;
     }
   }
-  return Array.from(byId.values());
+
+  private _deduplicate(records: SessionRecord[]): SessionRecord[] {
+    const byId = new Map<string, SessionRecord>();
+    for (const record of records) {
+      const existing = byId.get(record.id);
+      if (!existing || record.updatedAt >= existing.updatedAt) {
+        byId.set(record.id, record);
+      }
+    }
+    return Array.from(byId.values());
+  }
 }

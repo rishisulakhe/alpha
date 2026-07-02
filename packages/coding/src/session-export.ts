@@ -468,7 +468,7 @@ function _renderEntryBody(entry: SessionEntry): string {
     case "leaf":
       return `<p>Active leaf pointer: <code>${_escape(entry.entryId ?? "none")}</code></p>`;
     case "session_info":
-      return `<p>Title: <strong>${_escape(entry.title ?? "Untitled")}</strong></p>` +
+      return `<p>Title: <strong>${_escape(entry.name ?? entry.title ?? "Untitled")}</strong></p>` +
         `<p>Working directory: <code>${_escape(entry.cwd ?? "unknown")}</code></p>` +
         `<p>Created: ${_escape(entry.createdAt ?? "unknown")}</p>`;
     case "custom":
@@ -589,7 +589,7 @@ function _entrySummary(entry: SessionEntry): string {
     case "leaf":
       return entry.entryId ?? "none";
     case "session_info":
-      return entry.title ?? entry.cwd ?? "session metadata";
+      return entry.name ?? entry.title ?? entry.cwd ?? "session metadata";
     case "custom":
       return `${Object.keys(entry.data).length} field(s)`;
     default: {

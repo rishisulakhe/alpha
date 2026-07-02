@@ -1,11 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { getAlphaPaths, projectHash, projectSlug, projectSessionDir, defaultSessionPath } from "../src/config/paths.ts";
+import { getAlphaPaths, encodeCwd, projectSessionDir, defaultSessionPath } from "../src/config/paths.ts";
 import { FileCredentialStore, type OAuthCredential } from "../src/config/credentials.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-
-// === Step 28: Paths ===
 
 describe("AlphaPaths", () => {
   test("home is ~/.alpha", () => {
@@ -32,41 +30,23 @@ describe("AlphaPaths", () => {
   });
 });
 
-describe("projectHash", () => {
-  test("returns 6-char hex string", () => {
-    const hash = projectHash("/home/user/project");
-    expect(hash.length).toBe(6);
-    expect(/^[0-9a-f]{6}$/.test(hash)).toBe(true);
+describe("encodeCwd", () => {
+  test("encodes a Unix path", () => {
+    const encoded = encodeCwd("/home/user/my-project");
+    expect(encoded).toBe("--home-user-my-project--");
   });
 
-  test("is deterministic", () => {
-    expect(projectHash("/home/user/project")).toBe(projectHash("/home/user/project"));
-  });
-
-  test("different paths produce different hashes", () => {
-    expect(projectHash("/home/a")).not.toBe(projectHash("/home/b"));
-  });
-});
-
-describe("projectSlug", () => {
-  test("slugifies a Unix path", () => {
-    const slug = projectSlug("/home/user/my-project");
-    expect(slug).toBe("home-user-my-project");
-  });
-
-  test("replaces special chars with underscores", () => {
-    const slug = projectSlug("/Users/name/projects/my cool-repo!");
-    expect(slug).toContain("my_cool-repo");
+  test("replaces special chars", () => {
+    const encoded = encodeCwd("C:\\Users\\name\\projects");
+    expect(encoded).toContain("Users");
   });
 });
 
 describe("projectSessionDir", () => {
-  test("combines slug and hash", () => {
+  test("uses encoded cwd in path", () => {
     const dir = projectSessionDir("/home/user/project");
     expect(dir).toContain(".alpha/sessions/");
-    expect(dir).toContain("home-user-project");
-    const hash = projectHash("/home/user/project");
-    expect(dir.endsWith(`-${hash}`)).toBe(true);
+    expect(dir).toContain("--home-user-project--");
   });
 });
 

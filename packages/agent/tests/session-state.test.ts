@@ -202,13 +202,13 @@ describe("SessionState.fromEntries — session info and label", () => {
       parentId: null,
       timestamp: 1,
       cwd: "/home/project",
-      title: "My Session",
+      name: "My Session",
       createdAt: "2025-01-01T00:00:00Z",
     };
     const state = fromEntries([si]);
     expect(state.sessionInfo).not.toBeNull();
     expect(state.sessionInfo!.cwd).toBe("/home/project");
-    expect(state.sessionInfo!.title).toBe("My Session");
+    expect(state.sessionInfo!.name).toBe("My Session");
   });
 
   test("records label", () => {

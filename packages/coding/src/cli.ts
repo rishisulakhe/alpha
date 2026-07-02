@@ -1,10 +1,11 @@
 import { parseArgs } from "node:util";
-import { InMemorySessionStorage } from "@alpha/agent";
+import { InMemorySessionStorage, FsSessionStorage } from "@alpha/agent";
 import { CodingSession, type CodingSessionConfig } from "./session.ts";
 import { SessionManager } from "./session-manager.ts";
 import { createProvider, loadProviderSettings, getAlphaPaths, ensureAlphaDirectories } from "./provider.ts";
 import { createEventRenderer } from "./rendering/index.ts";
 import { createCodingTools } from "./tools/types.ts";
+import { projectSessionDir } from "./config/paths.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -113,24 +114,29 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
 async function handlePrintMode(args: ParsedArgs): Promise<void> {
   const cwd = args.cwd ?? process.cwd();
   const outputFormat = args.output ?? "text";
+  const paths = getAlphaPaths();
 
-  // Create provider with specified options
   const { provider, model, providerName } = createProvider({
     providerName: args.provider,
     model: args.model,
     thinkingLevel: "medium",
-    envOnly: false, // Use full configuration
+    envOnly: false,
   });
 
-  // Create coding tools (bash, read, write, edit)
   const tools = await createCodingTools(cwd);
+
+  const sessionDir = projectSessionDir(cwd, paths);
+  const sessionFileName = FsSessionStorage.sessionFileName(cwd);
+  const sessionPath = `${sessionDir}/${sessionFileName}`;
+  const storage = new FsSessionStorage(sessionPath);
+  await storage.ensureHeader(cwd);
 
   const config: CodingSessionConfig = {
     provider,
     model,
     cwd,
     tools,
-    storage: new InMemorySessionStorage(),
+    storage,
     providerName,
   };
 

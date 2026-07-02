@@ -2,21 +2,18 @@ import { z } from "zod/v4";
 import { AgentMessageSchema } from "../messages.ts";
 import type { JSONObject } from "../types/json.ts";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 export function newEntryId(): string {
-  return crypto.randomUUID().replace(/-/g, "");
+  return crypto.randomUUID().replace(/-/g, "").slice(0, 16);
 }
 
 export function currentTimestamp(): number {
   return Date.now() / 1000;
 }
 
-// ---------------------------------------------------------------------------
-// Base entry fields — shared by all entry types
-// ---------------------------------------------------------------------------
+export function formatTimestamp(ts?: number): string {
+  const date = ts ? new Date(ts * 1000) : new Date();
+  return date.toISOString().replace(/[:.]/g, "-");
+}
 
 const baseFields = {
   id: z.string().default(() => newEntryId()),
@@ -24,9 +21,15 @@ const baseFields = {
   timestamp: z.number().default(() => currentTimestamp()),
 };
 
-// ---------------------------------------------------------------------------
-// 1. MessageEntry
-// ---------------------------------------------------------------------------
+export const SessionHeaderSchema = z.strictObject({
+  type: z.literal("session"),
+  version: z.literal(1),
+  id: z.string(),
+  timestamp: z.number(),
+  cwd: z.string(),
+});
+
+export type SessionHeader = z.infer<typeof SessionHeaderSchema>;
 
 export const MessageEntrySchema = z.strictObject({
   ...baseFields,
@@ -35,10 +38,6 @@ export const MessageEntrySchema = z.strictObject({
 });
 
 export type MessageEntry = z.infer<typeof MessageEntrySchema>;
-
-// ---------------------------------------------------------------------------
-// 2. ModelChangeEntry
-// ---------------------------------------------------------------------------
 
 export const ModelChangeEntrySchema = z.strictObject({
   ...baseFields,
@@ -49,10 +48,6 @@ export const ModelChangeEntrySchema = z.strictObject({
 
 export type ModelChangeEntry = z.infer<typeof ModelChangeEntrySchema>;
 
-// ---------------------------------------------------------------------------
-// 3. ThinkingLevelChangeEntry
-// ---------------------------------------------------------------------------
-
 export const ThinkingLevelChangeEntrySchema = z.strictObject({
   ...baseFields,
   type: z.literal("thinking_level_change"),
@@ -61,22 +56,16 @@ export const ThinkingLevelChangeEntrySchema = z.strictObject({
 
 export type ThinkingLevelChangeEntry = z.infer<typeof ThinkingLevelChangeEntrySchema>;
 
-// ---------------------------------------------------------------------------
-// 4. CompactionEntry
-// ---------------------------------------------------------------------------
-
 export const CompactionEntrySchema = z.strictObject({
   ...baseFields,
   type: z.literal("compaction"),
   summary: z.string(),
   replacesEntryIds: z.array(z.string()).default([]),
+  tokensBefore: z.number().optional(),
+  tokensAfter: z.number().optional(),
 });
 
 export type CompactionEntry = z.infer<typeof CompactionEntrySchema>;
-
-// ---------------------------------------------------------------------------
-// 5. BranchSummaryEntry
-// ---------------------------------------------------------------------------
 
 export const BranchSummaryEntrySchema = z.strictObject({
   ...baseFields,
@@ -86,10 +75,6 @@ export const BranchSummaryEntrySchema = z.strictObject({
 
 export type BranchSummaryEntry = z.infer<typeof BranchSummaryEntrySchema>;
 
-// ---------------------------------------------------------------------------
-// 6. LabelEntry
-// ---------------------------------------------------------------------------
-
 export const LabelEntrySchema = z.strictObject({
   ...baseFields,
   type: z.literal("label"),
@@ -97,10 +82,6 @@ export const LabelEntrySchema = z.strictObject({
 });
 
 export type LabelEntry = z.infer<typeof LabelEntrySchema>;
-
-// ---------------------------------------------------------------------------
-// 7. LeafEntry
-// ---------------------------------------------------------------------------
 
 export const LeafEntrySchema = z.strictObject({
   ...baseFields,
@@ -110,23 +91,16 @@ export const LeafEntrySchema = z.strictObject({
 
 export type LeafEntry = z.infer<typeof LeafEntrySchema>;
 
-// ---------------------------------------------------------------------------
-// 8. SessionInfoEntry
-// ---------------------------------------------------------------------------
-
 export const SessionInfoEntrySchema = z.strictObject({
   ...baseFields,
   type: z.literal("session_info"),
   cwd: z.string(),
+  name: z.string().optional(),
   title: z.string().optional(),
-  createdAt: z.string(),
+  createdAt: z.string().optional(),
 });
 
 export type SessionInfoEntry = z.infer<typeof SessionInfoEntrySchema>;
-
-// ---------------------------------------------------------------------------
-// 9. CustomEntry
-// ---------------------------------------------------------------------------
 
 export const CustomEntrySchema = z.strictObject({
   ...baseFields,
@@ -136,10 +110,6 @@ export const CustomEntrySchema = z.strictObject({
 });
 
 export type CustomEntry = z.infer<typeof CustomEntrySchema>;
-
-// ---------------------------------------------------------------------------
-// SessionEntry — discriminated union
-// ---------------------------------------------------------------------------
 
 export const SessionEntrySchema = z.discriminatedUnion("type", [
   MessageEntrySchema,
