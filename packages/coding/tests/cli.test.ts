@@ -46,7 +46,7 @@ describe("CLI", () => {
       stdout: "pipe",
     });
     const output = await new Response(proc.stdout).text();
-    expect(output).toContain("TUI not yet implemented");
-    expect(output).toContain("Usage:");
+    // TUI now launches, just check for Alpha name
+    expect(output).toContain("Alpha");
   });
 });

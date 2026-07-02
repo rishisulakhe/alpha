@@ -24,7 +24,11 @@
 | — Enhanced Session | — | ✅ Complete | Per-project indexing, HTML/JSONL export, default sessions |
 | — Commands | — | ✅ Complete | Slash command registry, 18 builtin commands |
 | — OAuth | — | ✅ Complete | OpenAI Codex login flow with PKCE |
-| 10 — CLI & TUI | 41-44 | 🟡 Partial | CLI modes done, Ink TUI placeholder |
+| 10 — CLI & TUI | 41-44 | 🟡 Partial | CLI modes done, Ink TUI with streaming |
+| — TUI Core | — | ✅ Complete | State management, event adapter, streaming |
+| — Pickers | — | ✅ Complete | Model, session, theme, tree, thinking pickers |
+| — Autocomplete | — | ✅ Complete | Slash commands, models, skills completion |
+| — Sidebar | — | ✅ Complete | Session info, context usage, activity indicator |
 
 ---
 
