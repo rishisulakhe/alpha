@@ -18,9 +18,7 @@ import {
   type ErrorEvent,
 } from "./events.ts";
 
-// ---------------------------------------------------------------------------
-// runAgentLoop
-// ---------------------------------------------------------------------------
+// runAgentLoop — main agent loop, yielding events as it runs
 
 export async function* runAgentLoop(opts: {
   provider: ModelProvider;

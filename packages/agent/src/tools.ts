@@ -1,22 +1,16 @@
 import type { JSONObject } from "./types/json.ts";
 
-// ---------------------------------------------------------------------------
 // Re-export ToolCall from messages (single source of truth)
-// ---------------------------------------------------------------------------
 
 export { type ToolCall, ToolCallSchema } from "./messages.ts";
 
-// ---------------------------------------------------------------------------
 // CancellationToken — minimal interface for cooperative cancellation
-// ---------------------------------------------------------------------------
 
 export interface CancellationToken {
   isCancelled(): boolean;
 }
 
-// ---------------------------------------------------------------------------
 // SimpleCancellationToken — concrete implementation for tests and harness
-// ---------------------------------------------------------------------------
 
 export class SimpleCancellationToken implements CancellationToken {
   private _cancelled = false;
@@ -30,9 +24,7 @@ export class SimpleCancellationToken implements CancellationToken {
   }
 }
 
-// ---------------------------------------------------------------------------
 // AgentToolResult — structured result returned by a tool execution
-// ---------------------------------------------------------------------------
 
 export interface AgentToolResult {
   toolCallId: string;
@@ -44,9 +36,7 @@ export interface AgentToolResult {
   error?: string;
 }
 
-// ---------------------------------------------------------------------------
 // AgentTool — definition of a tool exposed to the agent loop
-// ---------------------------------------------------------------------------
 
 export interface AgentTool {
   name: string;

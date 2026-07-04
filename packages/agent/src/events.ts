@@ -2,9 +2,7 @@ import { z } from "zod/v4";
 import { AgentMessageSchema, ToolCallSchema } from "./messages.ts";
 import type { AgentToolResult } from "./tools.ts";
 
-// ---------------------------------------------------------------------------
 // Agent Layer Events
-// ---------------------------------------------------------------------------
 
 export const AgentStartEventSchema = z.strictObject({
   type: z.literal("agent_start"),
@@ -146,10 +144,7 @@ export const ErrorEventSchema = z.strictObject({
 
 export type ErrorEvent = z.infer<typeof ErrorEventSchema>;
 
-// ---------------------------------------------------------------------------
 // Discriminated union
-// ---------------------------------------------------------------------------
-
 export const AgentEventSchema = z.discriminatedUnion("type", [
   AgentStartEventSchema,
   AgentEndEventSchema,
@@ -169,9 +164,7 @@ export const AgentEventSchema = z.discriminatedUnion("type", [
 
 export type AgentEvent = z.infer<typeof AgentEventSchema>;
 
-// ---------------------------------------------------------------------------
 // Type guards
-// ---------------------------------------------------------------------------
 
 export function isMessageEndEvent(ev: AgentEvent): ev is MessageEndEvent {
   return ev.type === "message_end";

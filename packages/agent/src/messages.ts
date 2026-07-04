@@ -1,9 +1,7 @@
 import { z } from "zod/v4";
 import type { JSONObject } from "./types/json.ts";
 
-// ---------------------------------------------------------------------------
 // ToolCall — needed by AssistantMessage; shared with the tools module
-// ---------------------------------------------------------------------------
 
 export const ToolCallSchema = z.strictObject({
   id: z.string(),
@@ -13,10 +11,9 @@ export const ToolCallSchema = z.strictObject({
 
 export type ToolCall = z.infer<typeof ToolCallSchema>;
 
-// ---------------------------------------------------------------------------
 // Message schemas (provider-neutral)
-// ---------------------------------------------------------------------------
 
+//UserMessage
 export const UserMessageSchema = z.strictObject({
   role: z.literal("user"),
   content: z.string(),
@@ -24,6 +21,7 @@ export const UserMessageSchema = z.strictObject({
 
 export type UserMessage = z.infer<typeof UserMessageSchema>;
 
+// AssistantMessage
 export const AssistantMessageSchema = z.strictObject({
   role: z.literal("assistant"),
   content: z.string().default(""),
@@ -32,6 +30,7 @@ export const AssistantMessageSchema = z.strictObject({
 
 export type AssistantMessage = z.infer<typeof AssistantMessageSchema>;
 
+// ToolResultMessage
 export const ToolResultMessageSchema = z.strictObject({
   role: z.literal("tool"),
   tool_call_id: z.string(),
@@ -45,9 +44,7 @@ export const ToolResultMessageSchema = z.strictObject({
 
 export type ToolResultMessage = z.infer<typeof ToolResultMessageSchema>;
 
-// ---------------------------------------------------------------------------
 // Discriminated union
-// ---------------------------------------------------------------------------
 
 export const AgentMessageSchema = z.discriminatedUnion("role", [
   UserMessageSchema,
@@ -57,9 +54,7 @@ export const AgentMessageSchema = z.discriminatedUnion("role", [
 
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 
-// ---------------------------------------------------------------------------
 // Type guards
-// ---------------------------------------------------------------------------
 
 export function isUserMessage(msg: AgentMessage): msg is UserMessage {
   return msg.role === "user";
