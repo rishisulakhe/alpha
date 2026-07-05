@@ -1,3 +1,18 @@
+/**
+ * CodingSession — the core session manager for Alpha.
+ *
+ * Wraps AgentHarness with:
+ * - Durable session storage (JSONL)
+ * - Default coding tools (read, write, edit, bash)
+ * - Slash command handling
+ * - Model/provider management
+ * - Thinking level support
+ * - Context compaction
+ * - Session tree navigation
+ *
+ * Matches Tau's CodingSession architecture.
+ */
+
 import type { ModelProvider } from "@alpha/ai";
 import {
   AgentHarness,
@@ -21,7 +36,7 @@ import { loadSkills } from "./resources/skills.ts";
 import type { PromptTemplate } from "./resources/templates.ts";
 import { expandTemplateInvocation } from "./resources/templates.ts";
 import type { ProjectContextFile } from "./context/discovery.ts";
-import { discoverProjectContext } from "./context/discovery.ts";
+import { discoverProjectContext, type ResourceDiagnostic } from "./context/discovery.ts";
 import { type ContextUsageEstimate, estimateContextTokens } from "./context/tokens.ts";
 import {
   recentPreservingCompactionPlan,
@@ -40,6 +55,59 @@ import {
 } from "./commands.ts";
 
 // ---------------------------------------------------------------------------
+// Types matching Tau's session.py
+// ---------------------------------------------------------------------------
+
+/** A selectable model and the provider that serves it. */
+export interface ModelChoice {
+  providerName: string;
+  model: string;
+}
+
+/** One branchable entry in the active session tree. */
+export interface SessionTreeChoice {
+  entryId: string;
+  label: string;
+  active: boolean;
+  isToolCall: boolean;
+}
+
+/** Result of moving the active session tree leaf. */
+export interface SessionTreeBranchResult {
+  message: string;
+  inputPrefill?: string | null;
+}
+
+/** Result of an input-bar terminal command. */
+export interface TerminalCommandResult {
+  command: string;
+  output: string;
+  exitCode: number | null;
+  ok: boolean;
+  addedToContext: boolean;
+}
+
+/** Parsed input-bar terminal command request. */
+export interface TerminalCommandRequest {
+  command: string;
+  add_to_context: boolean;
+}
+
+/** Tau-owned resources loaded around a coding session. */
+export interface SessionResources {
+  skills: readonly Skill[];
+  promptTemplates: readonly PromptTemplate[];
+  contextFiles: readonly ProjectContextFile[];
+  diagnostics: readonly ResourceDiagnostic[];
+}
+
+/** Prepared active-context entries for a compaction run. */
+export interface CompactionPlan {
+  replaceEntryIds: string[];
+  messagesToSummarize: AgentMessage[];
+}
+
+// ---------------------------------------------------------------------------
 // CodingSessionConfig
 // ---------------------------------------------------------------------------
 
@@ -52,7 +120,10 @@ export interface CodingSessionConfig {
   sessionId?: string;
   thinkingLevel?: ThinkingLevel;
   providerName?: string;
+  providerSettings?: ProviderSettings;
   autoCompactTokenThreshold?: number;
+  autoCompactEnabled?: boolean;
+  contextWindowTokens?: number;
   tools?: CodingTool[];
   skills?: Skill[];
   promptTemplates?: PromptTemplate[];
@@ -64,9 +135,70 @@ export interface CodingSessionConfig {
   availableModels?: readonly string[];
   /** Available provider names */
   availableProviders?: readonly string[];
-  /** Context window for the model */
-  contextWindowTokens?: number;
+  /** Resource paths for loading skills/templates */
+  resourcePaths?: ResourcePaths;
+  /** Session manager for indexed sessions */
+  sessionManager?: SessionManager | null;
 }
+
+// ---------------------------------------------------------------------------
+// Resource paths (simplified from Tau's TauResourcePaths)
+// ---------------------------------------------------------------------------
+
+export interface ResourcePaths {
+  skillsDir?: string;
+  templatesDir?: string;
+  contextFiles?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Provider settings (simplified)
+// ---------------------------------------------------------------------------
+
+export interface ProviderSettings {
+  defaultProvider: string;
+  providers: ProviderConfig[];
+  scopedModels: ScopedModelConfig[];
+}
+
+export interface ProviderConfig {
+  name: string;
+  models: string[];
+  defaultModel: string;
+  thinkingLevels?: ThinkingLevel[];
+  thinkingModels?: string[];
+}
+
+export interface ScopedModelConfig {
+  provider: string;
+  model: string;
+}
+
+// ---------------------------------------------------------------------------
+// Session manager (simplified)
+// ---------------------------------------------------------------------------
+
+export interface SessionManager {
+  getSession(id: string): SessionRecord | null;
+  createSession(cwd: string, model: string, providerName?: string): SessionRecord;
+  touchSession(id: string, opts?: { model?: string; providerName?: string; title?: string }): SessionRecord | null;
+  listSessions(cwd?: string): SessionRecord[];
+}
+
+export interface SessionRecord {
+  id: string;
+  cwd: string;
+  model: string;
+  providerName?: string;
+  title?: string;
+  path: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// BranchChoice (legacy compatibility)
+// ---------------------------------------------------------------------------
 
 export interface BranchChoice {
   entryId: string;
@@ -99,6 +231,8 @@ export class CodingSession implements CommandSession {
   private _allEntries: SessionEntry[] = [];
   private _commandRegistry: CommandRegistry;
   private _sessionTitle: string | null = null;
+  private _lastParentId: string | null = null;
+  private _resourceDiagnostics: ResourceDiagnostic[] = [];
 
   constructor(config: CodingSessionConfig) {
     const cwd = config.cwd;
@@ -148,11 +282,22 @@ export class CodingSession implements CommandSession {
     const storage = config.storage ?? new InMemorySessionStorage();
     const entries = await storage.readAll();
 
-    const session = new CodingSession({ ...config, storage });
+    // Load resources
+    const resources = await _loadSessionResources(config.resourcePaths, config.contextFiles);
+
+    const session = new CodingSession({
+      ...config,
+      storage,
+      skills: config.skills ?? [...resources.skills],
+      promptTemplates: config.promptTemplates ?? [...resources.promptTemplates],
+      contextFiles: config.contextFiles ?? [...resources.contextFiles],
+    });
+
     session._allEntries = entries;
+    session._resourceDiagnostics = [...resources.diagnostics];
 
     if (entries.length === 0) {
-      // Create initial entries
+      // Create initial entries matching Tau
       const info: SessionEntry = {
         type: "session_info", id: newEntryId(), parentId: null,
         timestamp: currentTimestamp(), cwd: config.cwd, createdAt: new Date().toISOString(),
@@ -165,16 +310,25 @@ export class CodingSession implements CommandSession {
         type: "thinking_level_change", id: newEntryId(), parentId: modelChange.id,
         timestamp: currentTimestamp(), level: config.thinkingLevel ?? "medium",
       };
-      await storage.append(info);
-      await storage.append(modelChange);
-      await storage.append(thinkingChange);
+
+      const initialEntries = [info, modelChange, thinkingChange];
+      for (const entry of initialEntries) {
+        await storage.append(entry);
+      }
       session._allEntries = await storage.readAll();
+      session._lastParentId = thinkingChange.id;
+    } else {
+      // Find last parent
+      session._lastParentId = _lastParentIdFromEntries(session._allEntries);
     }
 
     // Replay state from entries
     const leafId = activeLeafId(session._allEntries);
     const state = fromEntries(session._allEntries, leafId);
     session._harness.replaceMessages([...state.messages]);
+
+    // Sync thinking level
+    session._syncThinkingLevelToActiveModel();
 
     return session;
   }
@@ -225,11 +379,19 @@ export class CodingSession implements CommandSession {
     return this._skills;
   }
 
+  get resourceDiagnostics(): readonly ResourceDiagnostic[] {
+    return this._resourceDiagnostics;
+  }
+
+  /** Structured context accounting for the active provider context. */
+  get contextUsage(): ContextUsageEstimate {
+    return estimateContextTokens(this._systemPrompt, [...this._harness.messages], this._tools);
+  }
+
   cancel(): void { this._harness.cancel(); }
 
   get contextTokenEstimate(): number {
-    const estimate = estimateContextTokens(this._systemPrompt, [...this._harness.messages], this._tools);
-    return estimate.totalTokens;
+    return this.contextUsage.totalTokens;
   }
 
   reloadProviderSettings(): void {
@@ -238,23 +400,28 @@ export class CodingSession implements CommandSession {
 
   // -- Prompt -----------------------------------------------------------------
 
-  async *prompt(content: string): AsyncIterable<AgentEvent> {
+  async *prompt(content: string, streamingBehavior?: "steer" | "follow_up"): AsyncIterable<AgentEvent> {
     const text = this.expandPromptText(content);
 
     if (this._harness.isRunning) {
-      this._harness.steer(text);
-      return;
+      if (streamingBehavior === "steer") {
+        this._harness.steer(text);
+        return;
+      }
+      if (streamingBehavior === "follow_up") {
+        this._harness.followUp(text);
+        return;
+      }
+      throw new Error("CodingSession is already running; pass streamingBehavior to queue a message.");
     }
 
-    const threshold = this._config.autoCompactTokenThreshold;
-    if (threshold != null) {
-      const usage = this.contextTokenEstimate;
-      if (usage > threshold) {
-        await this._compactImpl();
-      }
-    }
+    // Auto-compact if needed
+    await this._tryAutoCompact();
 
     yield* this._harness.prompt(text);
+
+    // Post-prompt auto-compact
+    await this._tryAutoCompact();
   }
 
   async *continue_(): AsyncIterable<AgentEvent> {
@@ -266,9 +433,10 @@ export class CodingSession implements CommandSession {
   setModel(model: string): void {
     this._model = model;
     this._harness.setModel(model);
+    this._syncThinkingLevelToActiveModel();
     // Persist asynchronously
     this._appendEntry({
-      type: "model_change", id: newEntryId(), parentId: this._lastParentId(),
+      type: "model_change", id: newEntryId(), parentId: this._lastParentId,
       timestamp: currentTimestamp(), model,
     }).catch(() => {});
   }
@@ -280,28 +448,85 @@ export class CodingSession implements CommandSession {
   async setThinkingLevel(level: ThinkingLevel): Promise<void> {
     this._thinkingLevel = normalizeThinkingLevel(level);
     await this._appendEntry({
-      type: "thinking_level_change", id: newEntryId(), parentId: this._lastParentId(),
+      type: "thinking_level_change", id: newEntryId(), parentId: this._lastParentId,
       timestamp: currentTimestamp(), level: this._thinkingLevel,
     });
   }
 
+  cycleThinkingLevel(): ThinkingLevel {
+    const available = this.availableThinkingLevels;
+    if (available.length === 0) return this._thinkingLevel;
+
+    const currentIndex = available.indexOf(this._thinkingLevel);
+    const nextIndex = (currentIndex + 1) % available.length;
+    this._thinkingLevel = available[nextIndex]!;
+    return this._thinkingLevel;
+  }
+
   // -- Session operations ------------------------------------------------------
 
-  async compact(_instructions?: string): Promise<void> {
-    await this._compactImpl();
+  async compact(instructions?: string): Promise<string> {
+    const plan = this._manualCompactionPlan();
+    const summary = await this._generateCompactionSummary(plan.messagesToSummarize, instructions);
+
+    // Replace messages in harness
+    this._harness.replaceMessages([
+      { role: "user", content: `Previous conversation summary:\n${summary}` },
+      ...this._keepRecentMessages(),
+    ]);
+
+    return `Compacted ${plan.replaceEntryIds.length} context entries.`;
   }
 
   async reload(): Promise<void> {
-    this._skills = loadSkills([]);
-    this._contextFiles = discoverProjectContext(this._config.cwd);
+    const resources = await _loadSessionResources(this._config.resourcePaths, this._config.contextFiles);
+    this._skills = [...resources.skills];
+    this._contextFiles = [...resources.contextFiles];
+    this._promptTemplates = [...resources.promptTemplates];
+    this._resourceDiagnostics = [...resources.diagnostics];
+
+    // Rebuild system prompt if skills/context changed
+    this._systemPrompt = buildSystemPrompt({
+      cwd: this._config.cwd,
+      tools: this._tools,
+      skills: this._skills,
+      customPrompt: this._config.customSystemPrompt,
+      appendPrompt: this._config.appendSystemPrompt,
+      contextFiles: this._contextFiles,
+    });
   }
 
-  async resume(_sessionId: string): Promise<void> {}
+  async resume(sessionId: string): Promise<string> {
+    const manager = this._config.sessionManager;
+    if (!manager) {
+      throw new Error("Session manager is not available");
+    }
 
-  async newSession(): Promise<void> {
-    this._sessionId = newEntryId();
+    const record = manager.getSession(sessionId);
+    if (!record) {
+      throw new Error(`Unknown session: ${sessionId}`);
+    }
+
+    // Would need to reload full session from record.path
+    // For now, just update session ID
+    this._sessionId = sessionId;
+    return `Resumed session: ${sessionId}`;
+  }
+
+  async newSession(): Promise<string> {
+    const manager = this._config.sessionManager;
+    if (!manager) {
+      this._sessionId = newEntryId();
+      this._allEntries = [];
+      this._harness.replaceMessages([]);
+      return "Started new session.";
+    }
+
+    const record = manager.createSession(this.cwd, this.model, this.providerName);
+    this._sessionId = record.id;
     this._allEntries = [];
     this._harness.replaceMessages([]);
+    return `Started new session: ${record.id}`;
   }
 
   /** Export the session to HTML or JSONL format. */
@@ -366,7 +591,33 @@ export class CodingSession implements CommandSession {
     return this._commandRegistry;
   }
 
-  async runTerminalCommand(_command: string, _addToContext: boolean): Promise<void> {}
+  async runTerminalCommand(command: string, addToContext: boolean): Promise<TerminalCommandResult> {
+    const bashTool = this._tools.find(t => t.name === "bash");
+    if (!bashTool) {
+      throw new Error("Bash tool not available");
+    }
+
+    const result = await bashTool.execute({ command }, undefined);
+    const exitCode = result.data && typeof result.data === "object" && "exit_code" in result.data
+      ? result.data.exit_code as number | null
+      : null;
+
+    if (addToContext) {
+      this._harness.appendMessage({
+        role: "user",
+        content: `[Terminal command: ${command}]\n${result.content}`,
+      });
+      await this._persistMessage(this._harness.messages[this._harness.messages.length - 1]!);
+    }
+
+    return {
+      command,
+      output: result.content,
+      exitCode,
+      ok: result.ok,
+      addedToContext: addToContext,
+    };
+  }
 
   // -- Prompt expansion -------------------------------------------------------
 
@@ -382,26 +633,54 @@ export class CodingSession implements CommandSession {
 
   // -- Tree branching ----------------------------------------------------------
 
-  treeChoices(): BranchChoice[] {
+  async treeChoices(): Promise<SessionTreeChoice[]> {
     const messages = branchableEntries(this._allEntries);
-    return messages.map((e, i) => ({
+    return messages.map((e) => ({
       entryId: e.id,
-      parentId: e.parentId,
-      summary: e.type === "message" ? this._summarizeMessage(e.message) : e.id,
-      indent: 0,
+      label: e.type === "message" ? this._summarizeMessage(e.message) : e.id,
+      active: e.id === activeLeafId(this._allEntries),
+      isToolCall: e.type === "message" && "tool_calls" in e.message && (e.message as any).tool_calls?.length > 0,
     }));
   }
 
-  async branchTo(entryId: string, _summarize?: boolean, _customInstructions?: string): Promise<void> {
+  async branchTo(entryId: string, summarize?: boolean, customInstructions?: string): Promise<SessionTreeBranchResult> {
     // Create a leaf entry pointing to the target
     const leaf: SessionEntry = {
-      type: "leaf", id: newEntryId(), parentId: this._lastParentId(),
+      type: "leaf", id: newEntryId(), parentId: this._lastParentId,
       timestamp: currentTimestamp(), entryId,
     };
     await this._appendEntry(leaf);
 
     // Reload state from the new branch
     await this._refreshFromStorage();
+
+    return { message: `Branched session at ${entryId}.` };
+  }
+
+  // -- Queue management --------------------------------------------------------
+
+  get queuedMessages(): { steering: readonly AgentMessage[]; followUp: readonly AgentMessage[] } {
+    // Would need to expose from harness
+    return { steering: [], followUp: [] };
+  }
+
+  get queuedSteeringMessages(): readonly string[] {
+    // Would need to expose from harness
+    return [];
+  }
+
+  get queuedFollowUpMessages(): readonly string[] {
+    // Would need to expose from harness
+    return [];
+  }
+
+  clearQueuedMessages(): void {
+    // Would need to expose from harness
+  }
+
+  popLatestFollowUpMessage(): string | null {
+    // Would need to expose from harness
+    return null;
   }
 
   // -- Persistence (public for Storage verification) ---------------------------
@@ -411,9 +690,16 @@ export class CodingSession implements CommandSession {
 
   // -- Private helpers --------------------------------------------------------
 
+  private _syncThinkingLevelToActiveModel(): void {
+    const available = this.availableThinkingLevels;
+    if (available.length > 0 && !available.includes(this._thinkingLevel)) {
+      this._thinkingLevel = available[0]!;
+    }
+  }
+
   private _persistMessage(message: AgentMessage): void {
     const entryId = newEntryId();
-    const parentId = this._lastParentId();
+    const parentId = this._lastParentId;
 
     const msgEntry: SessionEntry = {
       type: "message", id: entryId, parentId,
@@ -429,11 +715,13 @@ export class CodingSession implements CommandSession {
     this._storage.append(leafEntry).catch(() => {});
     this._allEntries.push(msgEntry);
     this._allEntries.push(leafEntry);
+    this._lastParentId = leafEntry.id;
   }
 
   private async _appendEntry(entry: SessionEntry): Promise<void> {
     await this._storage.append(entry);
     this._allEntries.push(entry);
+    this._lastParentId = entry.id;
   }
 
   private async _refreshFromStorage(): Promise<void> {
@@ -441,32 +729,74 @@ export class CodingSession implements CommandSession {
     const leafId = activeLeafId(this._allEntries);
     const state = fromEntries(this._allEntries, leafId);
     this._harness.replaceMessages([...state.messages]);
-  }
-
-  private _lastParentId(): string | null {
-    for (let i = this._allEntries.length - 1; i >= 0; i--) {
-      const e = this._allEntries[i]!;
-      if (e.type === "leaf") return e.id;
-    }
-    return null;
+    this._lastParentId = _lastParentIdFromEntries(this._allEntries);
   }
 
   private _summarizeMessage(message: AgentMessage): string {
     const prefix = `[${message.role[0]!.toUpperCase() + message.role.slice(1)}]`;
-    const content = message.content.slice(0, 60);
+    const content = typeof message.content === "string"
+      ? message.content.slice(0, 60)
+      : "[complex content]";
     return `${prefix}: ${content}`;
   }
 
-  private async _compactImpl(): Promise<void> {
+  private _manualCompactionPlan(): CompactionPlan {
     const msgs = this._harness.messages;
     const plan = recentPreservingCompactionPlan([...msgs]);
 
-    if (plan.compact.length === 0) return;
-
-    const summary = summarizeMessagesForCompaction(plan.compact);
-    this._harness.replaceMessages([
-      { role: "user", content: `Previous conversation summary:\n${summary}` },
-      ...plan.keep,
-    ]);
+    return {
+      replaceEntryIds: [], // Would need proper entry ID tracking
+      messagesToSummarize: plan.compact,
+    };
   }
+
+  private _keepRecentMessages(): AgentMessage[] {
+    const msgs = this._harness.messages;
+    const plan = recentPreservingCompactionPlan([...msgs]);
+    return [...plan.keep];
+  }
+
+  private async _generateCompactionSummary(messages: AgentMessage[], instructions?: string): Promise<string> {
+    return summarizeMessagesForCompaction(messages, instructions);
+  }
+
+  private async _tryAutoCompact(): Promise<boolean> {
+    const threshold = this.autoCompactTokenThreshold;
+    if (threshold === null) return false;
+
+    const usage = this.contextTokenEstimate;
+    if (usage <= threshold) return false;
+
+    await this.compact();
+    return true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+
+async function _loadSessionResources(
+  resourcePaths?: ResourcePaths,
+  contextFiles?: ProjectContextFile[],
+): Promise<SessionResources> {
+  const skills = loadSkills(resourcePaths?.skillsDir ? [resourcePaths.skillsDir] : []);
+  const promptTemplates: PromptTemplate[] = []; // Would load from templatesDir
+  const context = contextFiles ?? discoverProjectContext(process.cwd());
+  const diagnostics: ResourceDiagnostic[] = []; // Would collect from loading
+
+  return {
+    skills,
+    promptTemplates,
+    contextFiles: context,
+    diagnostics,
+  };
+}
+
+function _lastParentIdFromEntries(entries: SessionEntry[]): string | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]!;
+    if (e.type === "leaf") return e.id;
+  }
+  return null;
 }

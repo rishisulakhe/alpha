@@ -6,8 +6,17 @@ import { estimateMessageTokens } from "./tokens.ts";
 // summarizeMessagesForCompaction — deterministic fallback
 // ---------------------------------------------------------------------------
 
-export function summarizeMessagesForCompaction(messages: AgentMessage[]): string {
+export function summarizeMessagesForCompaction(
+  messages: AgentMessage[],
+  instructions?: string,
+): string {
   const lines = [`Automatically compacted ${messages.length} prior message(s):`];
+  
+  if (instructions) {
+    lines.push(`Instructions: ${instructions}`);
+    lines.push("");
+  }
+  
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]!;
     const role = msg.role[0]!.toUpperCase() + msg.role.slice(1);

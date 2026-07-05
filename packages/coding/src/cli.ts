@@ -93,15 +93,9 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
     return;
   }
 
-  // Default: TUI placeholder
-  console.log("Alpha — A TypeScript coding-agent harness");
-  console.log("");
-  console.log("Starting TUI...");
-  console.log("");
-
-  // Import and run TUI
+  // Default: Start TUI
   const { runTuiApp } = await import("./tui/app.tsx");
-  runTuiApp();
+  await runTuiApp();
 }
 
 // ---------------------------------------------------------------------------

@@ -2,12 +2,11 @@
  * TUI module exports.
  */
 
-// Main TUI app (new direct ANSI version)
-export { runTuiApp } from "./app-v2.ts";
+export { runTuiApp } from "./app.tsx";
 
-// Components (for extensions)
 export * from "./state.ts";
 export * from "./adapter.ts";
+export * from "./hooks.ts";
 export * from "./pickers.tsx";
 export * from "./autocomplete.tsx";
 export * from "./sidebar.tsx";

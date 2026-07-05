@@ -62,3 +62,16 @@ export async function createCodingTools(cwd: string): Promise<CodingTool[]> {
   ];
   return tools;
 }
+
+// ---------------------------------------------------------------------------
+// Re-export truncation utilities
+// ---------------------------------------------------------------------------
+
+export {
+  truncateHead,
+  truncateTail,
+  formatSize,
+  DEFAULT_MAX_OUTPUT_LINES,
+  DEFAULT_MAX_OUTPUT_BYTES,
+  type TruncationResult,
+} from "./truncation.ts";

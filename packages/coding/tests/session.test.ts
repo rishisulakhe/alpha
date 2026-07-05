@@ -103,7 +103,7 @@ describe("CodingSession — branching", () => {
   test("treeChoices returns message entries", async () => {
     const s = await CodingSession.load(baseConfig({ storage: new InMemorySessionStorage(), provider: makeProvider(["A"]) }));
     await collect(s.prompt("Hello"));
-    const choices = s.treeChoices();
+    const choices = await s.treeChoices();
     expect(choices.length).toBeGreaterThanOrEqual(1);
     expect(choices[0]!.entryId).toBeTypeOf("string");
   });
@@ -115,7 +115,7 @@ describe("CodingSession — branching", () => {
     await collect(s.prompt("Q2"));
     const msgsBefore = s.messages.length;
 
-    const choices = s.treeChoices();
+    const choices = await s.treeChoices();
     const firstUserEntry = choices[0]!;
 
     await s.branchTo(firstUserEntry.entryId);

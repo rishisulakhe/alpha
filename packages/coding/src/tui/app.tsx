@@ -1,220 +1,232 @@
 /**
- * Main TUI application for Alpha coding agent.
+ * Alpha TUI — Ink-based terminal UI with smooth streaming.
  *
- * A minimal Ink-based TUI that displays:
- * - Streaming assistant messages
- * - Tool call status and results
- * - Thinking blocks
- * - Error messages
+ * Uses useStreamingBuffer to accumulate text deltas in a ref
+ * and flush to React state at ~80ms intervals, avoiding
+ * jank from per-delta full re-renders.
  */
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { render, Box, Text, useInput, useApp } from "ink";
-import { InMemorySessionStorage } from "@alpha/agent";
+import { FsSessionStorage } from "@alpha/agent";
 import { CodingSession, type CodingSessionConfig } from "../session.ts";
 import { createProvider } from "../provider.ts";
-import type { AgentEvent } from "@alpha/agent";
+import { getAlphaPaths, projectSessionDir } from "../config/paths.ts";
+import { createCodingTools } from "../tools/types.ts";
+import type { AgentEvent, ToolCall, AgentToolResult } from "@alpha/agent";
 import { TuiState, type ChatItem } from "./state.ts";
-import { TuiEventAdapter } from "./adapter.ts";
-import { CompactInfoBar, ActivityIndicator, StatusBar } from "./sidebar.tsx";
+import { useStreamingBuffer } from "./hooks.ts";
+import { CompactInfoBar, ActivityIndicator } from "./sidebar.tsx";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface AppStatus {
-  provider: string;
-  model: string;
-  thinking: string;
-  tokens: number;
-}
-
-// ---------------------------------------------------------------------------
-// useScroll hook
-// ---------------------------------------------------------------------------
+const SCROLL_TICK = 3;
 
 function useScroll(itemCount: number, viewportHeight: number) {
   const [scrollOffset, setScrollOffset] = useState(0);
+  const [userScrolled, setUserScrolled] = useState(false);
+  const offsetRef = useRef(0);
+  const userScrolledRef = useRef(false);
 
-  // Auto-scroll to bottom when new items arrive
+  const maxOffset = Math.max(0, itemCount - viewportHeight);
+
   useEffect(() => {
-    const maxOffset = Math.max(0, itemCount - viewportHeight);
+    if (!userScrolledRef.current) {
+      offsetRef.current = maxOffset;
+      setScrollOffset(maxOffset);
+    }
+  }, [itemCount, viewportHeight, maxOffset]);
+
+  const scrollUp = useCallback((lines = 1) => {
+    const next = Math.max(0, offsetRef.current - lines);
+    offsetRef.current = next;
+    userScrolledRef.current = next < maxOffset;
+    setScrollOffset(next);
+    setUserScrolled(userScrolledRef.current);
+  }, [maxOffset]);
+
+  const scrollDown = useCallback((lines = 1) => {
+    const next = Math.min(maxOffset, offsetRef.current + lines);
+    offsetRef.current = next;
+    userScrolledRef.current = next < maxOffset;
+    setScrollOffset(next);
+    setUserScrolled(userScrolledRef.current);
+  }, [maxOffset]);
+
+  const scrollToBottom = useCallback(() => {
+    offsetRef.current = maxOffset;
+    userScrolledRef.current = false;
     setScrollOffset(maxOffset);
-  }, [itemCount, viewportHeight]);
+    setUserScrolled(false);
+  }, [maxOffset]);
 
-  const scrollUp = useCallback(() => {
-    setScrollOffset((prev) => Math.max(0, prev - 1));
-  }, []);
-
-  const scrollDown = useCallback(() => {
-    const maxOffset = Math.max(0, itemCount - viewportHeight);
-    setScrollOffset((prev) => Math.min(maxOffset, prev + 1));
-  }, [itemCount, viewportHeight]);
-
-  return { scrollOffset, scrollUp, scrollDown };
+  return { scrollOffset, userScrolled, scrollUp, scrollDown, scrollToBottom };
 }
 
-// ---------------------------------------------------------------------------
-// useAgentSession hook
-// ---------------------------------------------------------------------------
-
-function useAgentSession() {
+function useSession() {
   const sessionRef = useRef<CodingSession | null>(null);
   const [ready, setReady] = useState(false);
-  const [providerName, setProviderName] = useState("demo");
+  const [providerName, setProviderName] = useState("loading");
+  const [modelName, setModelName] = useState("loading");
 
   useEffect(() => {
-    const { provider, model, providerName: resolvedProviderName } = createProvider();
+    const init = async () => {
+      try {
+        const { provider, model, providerName: resolvedName } = createProvider();
+        const paths = getAlphaPaths();
+        const cwd = process.cwd();
+        const dir = projectSessionDir(cwd, paths);
+        const fileName = FsSessionStorage.sessionFileName(cwd);
+        const sessionPath = `${dir}/${fileName}`;
+        const storage = new FsSessionStorage(sessionPath);
+        await storage.ensureHeader(cwd);
 
-    const config: CodingSessionConfig = {
-      provider,
-      model,
-      cwd: process.cwd(),
-      storage: new InMemorySessionStorage(),
-      providerName: resolvedProviderName,
+        const tools = await createCodingTools(cwd);
+
+        const config: CodingSessionConfig = {
+          provider,
+          model,
+          cwd,
+          tools,
+          storage,
+          providerName: resolvedName,
+        };
+        const session = await CodingSession.load(config);
+        sessionRef.current = session;
+        setProviderName(resolvedName);
+        setModelName(session.model);
+        setReady(true);
+      } catch (err) {
+        setReady(true);
+        setProviderName("error");
+        setModelName(String(err));
+      }
     };
-    CodingSession.load(config).then((s) => {
-      sessionRef.current = s;
-      setProviderName(resolvedProviderName);
-      setReady(true);
-    });
+    init();
   }, []);
 
-  return { session: sessionRef.current, ready, providerName };
+  return { session: sessionRef.current, ready, providerName, modelName };
+}
+
+function useForceUpdate() {
+  const [, setTick] = useState({});
+  return useCallback(() => setTick({}), []);
 }
 
 // ---------------------------------------------------------------------------
-// TranscriptView component
+// Transcript rendering
 // ---------------------------------------------------------------------------
+
+function roleColor(role: ChatItem["role"]): string | undefined {
+  switch (role) {
+    case "user": return "cyan";
+    case "assistant": return "green";
+    case "tool": return "yellow";
+    case "thinking": return "magenta";
+    case "error": return "red";
+    case "status": return undefined;
+    default: return undefined;
+  }
+}
+
+function roleIcon(role: ChatItem["role"]): string {
+  switch (role) {
+    case "user": return "→";
+    case "assistant": return "←";
+    case "thinking": return "💭";
+    case "tool": return "  ";
+    case "error": return "✗";
+    case "status": return "•";
+    default: return " ";
+  }
+}
+
+function truncate(str: string, max: number): string {
+  if (str.length <= max) return str;
+  return str.slice(0, max - 1) + "\u2026";
+}
 
 function TranscriptView({
   items,
-  assistantBuffer,
+  streamingText,
   running,
+  showThinking,
   scrollOffset,
   height,
 }: {
   items: ChatItem[];
-  assistantBuffer: string;
+  streamingText: string;
   running: boolean;
+  showThinking: boolean;
   scrollOffset: number;
   height: number;
 }) {
-  // Calculate visible items based on scroll position
-  const visibleItems = items.slice(scrollOffset, scrollOffset + height);
+  const filtered = showThinking
+    ? items
+    : items.filter((i) => i.role !== "thinking");
 
-  // Show scroll indicator if there are more items
-  const hasMoreAbove = scrollOffset > 0;
-  const hasMoreBelow = scrollOffset + height < items.length;
+  const visible = filtered.slice(scrollOffset, scrollOffset + height);
+  const hasAbove = scrollOffset > 0;
+  const hasBelow = scrollOffset + height < filtered.length;
+
+  const termWidth = process.stdout.columns ?? 80;
+  const maxLen = termWidth - 4;
 
   return (
     <Box flexDirection="column" flexGrow={1} paddingX={1}>
-      {/* Scroll indicator */}
-      {hasMoreAbove && (
-        <Text dimColor>↑ {scrollOffset} more above</Text>
+      {hasAbove && (
+        <Text dimColor>{"\u2191"} {scrollOffset} lines above</Text>
       )}
 
-      {visibleItems.length === 0 && !running ? (
+      {visible.length === 0 && !running && !streamingText && (
         <Box flexDirection="column">
           <Text dimColor>Welcome to Alpha! Type a prompt to begin.</Text>
           <Text dimColor> </Text>
-          <Text dimColor>Commands: /help /quit /session /model /thinking</Text>
-          <Text dimColor>Shell: !command (add to context) or !!command (hidden)</Text>
+          <Text dimColor>Commands: /help /model /thinking /compact /quit</Text>
+          <Text dimColor>Streaming: Enter/Ctrl+O toggle tools/Esc cancel/Ctrl+D quit</Text>
         </Box>
-      ) : (
-        visibleItems.map((item) => (
-          <ChatItemView key={item.id} item={item} />
-        ))
       )}
 
-      {/* Show assistant buffer while streaming */}
-      {assistantBuffer && (
+      {visible.map((item) => {
+        if (item.role === "thinking" && !showThinking) return null;
+        const color = roleColor(item.role);
+        const icon = roleIcon(item.role);
+        const dim = item.role === "thinking" || item.role === "tool" || item.role === "status";
+
+        return (
+          <Box key={item.id} flexDirection="column">
+            {item.text.split("\n").map((line, li) => (
+              <Text key={li} color={color} dimColor={dim}>
+                {icon} {truncate(line, maxLen)}
+              </Text>
+            ))}
+          </Box>
+        );
+      })}
+
+      {streamingText && (
         <Box flexDirection="column">
-          <Text color="green">
-            {"← "}
-            {assistantBuffer}
-          </Text>
+          {streamingText.split("\n").map((line, li) => (
+            <Text key={li} color="green">
+              {"\u2190"} {truncate(line, maxLen)}
+            </Text>
+          ))}
         </Box>
       )}
 
-      {/* Activity indicator */}
-      {running && !assistantBuffer && items[items.length - 1]?.role !== "tool" && (
+      {running && !streamingText && items[items.length - 1]?.role !== "tool" && (
         <Box>
-          <ActivityIndicator active={running} />
+          <ActivityIndicator active={true} />
         </Box>
       )}
 
-      {/* Scroll indicator */}
-      {hasMoreBelow && (
-        <Text dimColor>↓ {items.length - scrollOffset - height} more below</Text>
+      {hasBelow && (
+        <Text dimColor>{"\u2193"} {filtered.length - scrollOffset - height} lines below</Text>
       )}
     </Box>
   );
 }
 
 // ---------------------------------------------------------------------------
-// ChatItemView component
-// ---------------------------------------------------------------------------
-
-function ChatItemView({ item }: { item: ChatItem }) {
-  switch (item.role) {
-    case "user":
-      return (
-        <Box flexDirection="column">
-          <Text color="cyan">{`→ ${item.text}`}</Text>
-        </Box>
-      );
-
-    case "assistant":
-      return (
-        <Box flexDirection="column">
-          <Text color="green">{`← ${item.text}`}</Text>
-        </Box>
-      );
-
-    case "thinking":
-      return (
-        <Box flexDirection="column">
-          <Text color="magenta" dimColor italic>
-            {item.collapsed ? "💭 " : ""}
-            {item.text.slice(0, 200)}
-            {item.text.length > 200 ? "…" : ""}
-          </Text>
-        </Box>
-      );
-
-    case "tool":
-      return (
-        <Box flexDirection="column">
-          <Text color="yellow" dimColor>
-            {`⚙ ${item.text}`}
-          </Text>
-        </Box>
-      );
-
-    case "error":
-      return (
-        <Box flexDirection="column">
-          <Text color="red" bold>
-            {`✗ ${item.text}`}
-          </Text>
-        </Box>
-      );
-
-    case "status":
-      return (
-        <Box flexDirection="column">
-          <Text dimColor>{`• ${item.text}`}</Text>
-        </Box>
-      );
-
-    default:
-      return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// PromptInput component
+// Prompt input
 // ---------------------------------------------------------------------------
 
 function PromptInput({
@@ -223,18 +235,18 @@ function PromptInput({
   onSubmit,
   running,
   isSlashCommand,
-  isTerminalCommand,
   onScrollUp,
   onScrollDown,
+  onScrollToBottom,
 }: {
   value: string;
   onChange: (v: string) => void;
   onSubmit: () => void;
   running: boolean;
   isSlashCommand: boolean;
-  isTerminalCommand: boolean;
-  onScrollUp: () => void;
-  onScrollDown: () => void;
+  onScrollUp: (lines?: number) => void;
+  onScrollDown: (lines?: number) => void;
+  onScrollToBottom: () => void;
 }) {
   useInput(
     (input, key) => {
@@ -243,14 +255,23 @@ function PromptInput({
         return;
       }
 
-      // Handle scrolling
       if (key.upArrow) {
-        onScrollUp();
+        onScrollUp(SCROLL_TICK);
         return;
       }
 
       if (key.downArrow) {
-        onScrollDown();
+        onScrollDown(SCROLL_TICK);
+        return;
+      }
+
+      if (key.pageUp) {
+        onScrollUp(10);
+        return;
+      }
+
+      if (key.pageDown) {
+        onScrollDown(10);
         return;
       }
 
@@ -259,7 +280,6 @@ function PromptInput({
         return;
       }
 
-      // Handle character input
       if (!key.ctrl && !key.meta && input.length === 1) {
         onChange(value + input);
       }
@@ -267,181 +287,231 @@ function PromptInput({
     { isActive: !running },
   );
 
-  const promptSymbol = isSlashCommand ? "⌘" : isTerminalCommand ? "!" : "τ";
+  const color = isSlashCommand ? "yellow" : "green";
 
   return (
     <Box paddingX={1}>
-      <Text color={isSlashCommand ? "yellow" : isTerminalCommand ? "blue" : "green"} bold>
-        {promptSymbol}
+      <Text color={color} bold>
+        {isSlashCommand ? "/" : "\u03c4"}
         {" "}
       </Text>
       <Text>{value}</Text>
-      {!running && <Text dimColor>█</Text>}
+      {!running && <Text dimColor>{"\u2588"}</Text>}
     </Box>
   );
 }
 
 // ---------------------------------------------------------------------------
-// AlphaTuiApp main component
+// Main app
 // ---------------------------------------------------------------------------
 
 function AlphaTuiApp() {
-  const { session, ready, providerName } = useAgentSession();
+  const { session, ready, providerName, modelName } = useSession();
   const { exit } = useApp();
+  const forceUpdate = useForceUpdate();
 
-  // Use TuiState for managing display state
   const stateRef = useRef(new TuiState());
-  const [, forceUpdate] = useState({});
+  const streamBuf = useStreamingBuffer();
 
   const [input, setInput] = useState("");
-  const [status, setStatus] = useState<AppStatus>({
-    provider: "loading",
-    model: "loading",
-    thinking: "medium",
-    tokens: 0,
-  });
 
-  const isSlashCommand = input.startsWith("/");
-  const isTerminalCommand = input.startsWith("!");
+  // Header status
+  const [tokenCount, setTokenCount] = useState(0);
+  const [thinkingLevel, setThinkingLevel] = useState("medium");
 
-  // Force re-render helper
-  const refresh = useCallback(() => forceUpdate({}), []);
-
-  // Calculate viewport height for transcript
   const termHeight = process.stdout.rows ?? 24;
-  const transcriptHeight = Math.max(5, termHeight - 8); // Reserve space for header, dividers, prompt, status
+  const transcriptHeight = Math.max(5, termHeight - 6);
 
-  // Scroll handling
-  const { scrollOffset, scrollUp, scrollDown } = useScroll(
-    stateRef.current.items.length,
+  const state = stateRef.current;
+  const scroll = useScroll(
+    state.items.length + (streamBuf.displayText ? 1 : 0),
     transcriptHeight,
   );
 
-  // Update status when session is ready
+  // Sync header info from session
   useEffect(() => {
-    if (session) {
-      setStatus({
-        provider: providerName,
-        model: session.model,
-        thinking: session.thinkingLevel,
-        tokens: session.contextTokenEstimate,
-      });
-    }
-  }, [session, providerName]);
+    if (!session) return;
+    setThinkingLevel(session.thinkingLevel);
+    setTokenCount(session.contextTokenEstimate);
+  }, [session]);
 
-  // Global keybindings (work even when running)
+  // Global keybindings (active even when running)
   useInput(
     (input, key) => {
-      // Escape cancels running operation
       if (key.escape) {
-        if (stateRef.current.running && session) {
+        if (state.running && session) {
           session.cancel();
-          stateRef.current.addStatus("Cancelled.");
-          refresh();
+          state.addStatus("Cancelled.");
+          streamBuf.reset();
+          forceUpdate();
         }
         return;
       }
 
-      // Ctrl+C or Ctrl+D exits
       if (key.ctrl && (input === "c" || input === "d")) {
         exit();
         return;
       }
     },
-    { isActive: stateRef.current.running },
+    { isActive: true },
   );
 
-  // Handle prompt submission
+  // Prompt submission
   const handleSubmit = useCallback(async () => {
-    if (!input.trim() || !session) return;
-
     const text = input.trim();
+    if (!text || !session) return;
     setInput("");
 
-    const state = stateRef.current;
-
-    // Handle slash commands locally
+    // Slash commands
     if (text.startsWith("/")) {
-      const cmd = text.split(/\s+/)[0]?.toLowerCase();
-
-      if (cmd === "/quit" || cmd === "/exit") {
-        state.addStatus("Goodbye!");
-        refresh();
-        setTimeout(() => exit(), 500);
-        return;
-      }
-
-      if (cmd === "/help") {
-        state.addStatus("Commands: /quit /help /session /model /thinking /clear");
-        refresh();
-        return;
-      }
-
-      if (cmd === "/session") {
-        state.addStatus(
-          `Session: ${session.sessionId?.slice(0, 16) ?? "none"} | Model: ${session.model} | Tokens: ~${session.contextTokenEstimate}`,
-        );
-        refresh();
-        return;
-      }
-
-      if (cmd === "/clear") {
-        state.clear();
-        refresh();
-        return;
-      }
-
-      if (cmd === "/model") {
-        state.addStatus(`Current model: ${session.model}`);
-        refresh();
-        return;
-      }
-
-      if (cmd === "/thinking") {
-        state.addStatus(`Thinking level: ${session.thinkingLevel}`);
-        refresh();
+      const result = session.handleCommand(text);
+      if (result.handled) {
+        if (result.exitRequested) {
+          state.addStatus(result.message ?? "Exiting...");
+          forceUpdate();
+          setTimeout(() => exit(), 300);
+          return;
+        }
+        if (result.newSessionRequested) {
+          state.clear();
+          await session.newSession();
+          state.addStatus("Started new session.");
+          forceUpdate();
+          return;
+        }
+        if (result.thinkingLevel) {
+          await session.setThinkingLevel(result.thinkingLevel);
+          setThinkingLevel(result.thinkingLevel);
+          state.addStatus(`Thinking: ${result.thinkingLevel}`);
+          forceUpdate();
+          return;
+        }
+        if (result.compactSummary !== undefined) {
+          await session.compact(result.compactSummary);
+          state.addStatus("Compacted context.");
+          setTokenCount(session.contextTokenEstimate);
+          forceUpdate();
+          return;
+        }
+        const msg = await session.applyCommandResult(result);
+        if (msg) state.addStatus(msg);
+        setTokenCount(session.contextTokenEstimate);
+        forceUpdate();
         return;
       }
     }
 
-    // Handle terminal commands
+    // Terminal commands
     if (text.startsWith("!!")) {
-      state.addStatus(`[shell] ${text.slice(2)} (hidden, not added to context)`);
-      refresh();
+      try {
+        const cmdResult = await session.runTerminalCommand(text.slice(2).trim(), false);
+        state.addStatus(`[shell] ${cmdResult.command}\n${cmdResult.output.slice(0, 400)}`);
+      } catch (err) {
+        state.addError(String(err));
+      }
+      forceUpdate();
       return;
     }
 
     if (text.startsWith("!")) {
-      state.addStatus(`[shell] ${text.slice(1)} (would run in terminal)`);
-      refresh();
+      try {
+        const cmdResult = await session.runTerminalCommand(text.slice(1).trim(), true);
+        state.addStatus(`[shell] ${cmdResult.command}\n${cmdResult.output.slice(0, 400)}`);
+      } catch (err) {
+        state.addError(String(err));
+      }
+      forceUpdate();
       return;
     }
 
-    // Create adapter for this run
-    const adapter = new TuiEventAdapter(state);
-
-    // Run the prompt
-    state.running = true;
+    // Normal prompt
     state.addUserMessage(text);
-    refresh();
+    state.running = true;
+    state.error = null;
+    streamBuf.reset();
+    streamBuf.startFlushing();
+    scroll.scrollToBottom();
+    forceUpdate();
 
     try {
       for await (const event of session.prompt(text)) {
-        adapter.apply(event);
-        refresh();
+        switch (event.type) {
+          case "message_delta":
+            streamBuf.append(event.text);
+            break;
+
+          case "thinking_delta":
+            state.addThinkingDelta(event.text);
+            if (state.showThinking) forceUpdate();
+            break;
+
+          case "message_end": {
+            const msg = event.message;
+            if (msg.role === "assistant") {
+              const flushed = streamBuf.finalize();
+              if (flushed || msg.content) {
+                state.addAssistantMessage(msg.content || flushed);
+              }
+              streamBuf.startFlushing();
+              forceUpdate();
+            }
+            break;
+          }
+
+          case "tool_execution_start": {
+            const flushed = streamBuf.finalize();
+            if (flushed) state.addAssistantMessage(flushed);
+            if (event.call) state.addToolCall(event.call);
+            streamBuf.startFlushing();
+            forceUpdate();
+            break;
+          }
+
+          case "tool_execution_end":
+            state.recordToolResult(event.result);
+            forceUpdate();
+            break;
+
+          case "retry":
+            state.addStatus(`Retrying: ${event.message}`);
+            forceUpdate();
+            break;
+
+          case "error": {
+            const flushed = streamBuf.finalize();
+            if (flushed) state.addAssistantMessage(flushed);
+            if (event.recoverable && event.message === "Agent run cancelled") {
+              state.addStatus("Agent run cancelled.");
+            } else {
+              state.addError(event.message);
+            }
+            streamBuf.startFlushing();
+            forceUpdate();
+            break;
+          }
+
+          case "agent_end":
+          case "turn_start":
+          case "turn_end":
+          case "message_start":
+          case "queue_update":
+            break;
+        }
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      state.addError(message);
-      refresh();
+      const flushed = streamBuf.finalize();
+      if (flushed) state.addAssistantMessage(flushed);
+      state.addError(err instanceof Error ? err.message : String(err));
+      forceUpdate();
+    } finally {
+      const remaining = streamBuf.finalize();
+      if (remaining) state.addAssistantMessage(remaining);
+      state.running = false;
+      setTokenCount(session.contextTokenEstimate);
+      scroll.scrollToBottom();
+      forceUpdate();
     }
-
-    state.running = false;
-
-    // Update token count
-    setStatus((prev) => ({ ...prev, tokens: session.contextTokenEstimate }));
-    refresh();
-  }, [input, session, refresh, exit]);
+  }, [input, session, state, streamBuf, forceUpdate, scroll, exit]);
 
   if (!ready) {
     return (
@@ -451,52 +521,47 @@ function AlphaTuiApp() {
     );
   }
 
-  const state = stateRef.current;
-
   return (
-    <Box flexDirection="column" height={process.stdout.rows ?? 24}>
-      {/* Top status bar */}
+    <Box flexDirection="column" height={termHeight}>
       <CompactInfoBar
-        provider={status.provider}
-        model={status.model}
-        tokens={status.tokens}
-        thinkingLevel={status.thinking}
+        provider={providerName}
+        model={modelName}
+        tokens={tokenCount}
+        thinkingLevel={thinkingLevel}
       />
 
-      {/* Divider */}
-      <Text dimColor>{"─".repeat((process.stdout.columns ?? 80) - 2)}</Text>
+      <Text dimColor>{"\u2500".repeat((process.stdout.columns ?? 80) - 2)}</Text>
 
-      {/* Main transcript area */}
       <TranscriptView
         items={state.items}
-        assistantBuffer={state.assistantBuffer}
+        streamingText={streamBuf.displayText}
         running={state.running}
-        scrollOffset={scrollOffset}
+        showThinking={state.showThinking}
+        scrollOffset={scroll.scrollOffset}
         height={transcriptHeight}
       />
 
-      {/* Divider */}
-      <Text dimColor>{"─".repeat((process.stdout.columns ?? 80) - 2)}</Text>
+      <Text dimColor>{"\u2500".repeat((process.stdout.columns ?? 80) - 2)}</Text>
 
-      {/* Prompt input */}
       <PromptInput
         value={input}
         onChange={setInput}
         onSubmit={handleSubmit}
         running={state.running}
-        isSlashCommand={isSlashCommand}
-        isTerminalCommand={isTerminalCommand}
-        onScrollUp={scrollUp}
-        onScrollDown={scrollDown}
+        isSlashCommand={input.startsWith("/")}
+        onScrollUp={scroll.scrollUp}
+        onScrollDown={scroll.scrollDown}
+        onScrollToBottom={scroll.scrollToBottom}
       />
 
-      {/* Bottom status */}
       <Box paddingX={1} flexDirection="row" justifyContent="space-between">
         <Box>
           {state.running && <ActivityIndicator active={true} />}
         </Box>
         <Text dimColor>
-          tokens: ~{status.tokens} | Esc: cancel | Ctrl+D: quit
+          {state.running
+            ? "Esc: cancel | Ctrl+D: quit"
+            : `tokens: ~${tokenCount} | Esc: cancel | Ctrl+D: quit`}
         </Text>
       </Box>
     </Box>
@@ -509,8 +574,8 @@ function AlphaTuiApp() {
 
 export function runTuiApp(): void {
   if (!process.stdin.isTTY) {
-    console.log("Alpha TUI requires an interactive terminal. Use -p for print mode instead.");
-    console.log("  alpha -p 'your prompt'        Non-interactive print mode");
+    console.log("Alpha TUI requires an interactive terminal. Use -p for print mode.");
+    console.log("  alpha -p 'your prompt'");
     process.exit(1);
   }
   render(React.createElement(AlphaTuiApp));

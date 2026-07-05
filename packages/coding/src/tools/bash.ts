@@ -1,210 +1,275 @@
-import type { AgentToolResult } from "@alpha/agent";
+/**
+ * Bash tool for Alpha coding sessions.
+ *
+ * Executes shell commands with:
+ * - Combined stdout/stderr capture
+ * - Configurable timeout
+ * - Cancellation support
+ * - Output truncation with temp file fallback
+ * - Process group kill for pipelines
+ *
+ * Matches Tau's bash tool behavior.
+ */
+
+import type { AgentToolResult, CancellationToken } from "@alpha/agent";
 import type { CodingTool } from "./types.ts";
 import { successResult, errorResult } from "./types.ts";
+import { truncateTail, formatSize, DEFAULT_MAX_OUTPUT_LINES, DEFAULT_MAX_OUTPUT_BYTES } from "./truncation.ts";
 import * as path from "node:path";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { spawn, ChildProcess } from "node:child_process";
+import { writeFileSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 
-const MAX_OUTPUT_LINES = 2000;
-const MAX_OUTPUT_BYTES = 50 * 1024;
+// ---------------------------------------------------------------------------
+// createBashTool
+// ---------------------------------------------------------------------------
 
 export function createBashTool(cwd: string): CodingTool {
   return {
     name: "bash",
-    description: "Execute a shell command and capture its output.",
+    description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_OUTPUT_LINES} lines or ${DEFAULT_MAX_OUTPUT_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
     inputSchema: {
       type: "object",
       properties: {
-        command: { type: "string", description: "The shell command to execute." },
-        timeout: { type: "number", description: "Maximum execution time in milliseconds. Default: 120000 (2 min)." },
+        command: { type: "string", description: "Bash command to execute" },
+        timeout: { type: "number", description: "Timeout in seconds (optional, no default timeout)" },
       },
       required: ["command"],
     },
-    promptSnippet: "bash(command: string, timeout?: number) — Run a shell command.",
-    promptGuidelines: "Use bash to run shell commands. Commands run in the project working directory.",
+    promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
+    promptGuidelines: "",
     async execute(args, signal): Promise<AgentToolResult> {
       const command = String(args.command ?? "");
-      if (!command) return errorResult("", "bash", "command is required");
+      const timeout = _optionalFloatArg(args.timeout);
 
-      const timeoutMs = typeof args.timeout === "number" && args.timeout > 0
-        ? args.timeout
-        : 120000;
-
-      // Check cancellation before starting
+      if (!command) {
+        return errorResult("", "bash", "command is required");
+      }
+      if (timeout !== null && timeout <= 0) {
+        return errorResult("", "bash", "timeout must be greater than 0");
+      }
       if (signal?.isCancelled()) {
-        return errorResult("", "bash", "Command cancelled", { exitCode: -1, timedOut: false });
+        return errorResult("", "bash", "Command cancelled");
       }
 
-      let proc: ReturnType<typeof Bun.spawn>;
-      try {
-        proc = Bun.spawn({
-          cmd: ["sh", "-c", command],
-          cwd,
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return errorResult("", "bash", msg);
-      }
+      const startTime = Date.now();
 
-      let timedOut = false;
-      let cancelled = false;
+      // Run command
+      const { output, exitCode, timedOut, cancelled } = await _runCommand(command, cwd, {
+        timeout,
+        signal,
+      });
 
-      // Timeout
-      const timeoutId = timeoutMs > 0
-        ? setTimeout(() => {
-            timedOut = true;
-            proc.kill();
-          }, timeoutMs)
-        : null;
+      // Truncate output
+      const truncation = truncateTail(output);
+      const durationSeconds = (Date.now() - startTime) / 1000;
 
-      // Cancellation watcher
-      let cancelWatcher: ReturnType<typeof setInterval> | null = null;
-      if (signal) {
-        cancelWatcher = setInterval(() => {
-          if (signal.isCancelled()) {
-            cancelled = true;
-            proc.kill();
-          }
-        }, 50);
-      }
+      // Build result
+      let outputText = truncation.content || "(no output)";
+      const fullOutputPath: string | null = truncation.truncated ? _writeTempOutput(output) : null;
 
-      try {
-        const exitCode = await proc.exited;
+      // Add truncation notice
+      if (truncation.truncated && fullOutputPath) {
+        const startLine = truncation.totalLines - truncation.outputLines + 1;
+        const endLine = truncation.totalLines;
 
-        if (timeoutId) clearTimeout(timeoutId);
-        if (cancelWatcher) clearInterval(cancelWatcher);
-
-        const stdoutText = await new Response(proc.stdout as unknown as ReadableStream).text();
-        const stderrText = await new Response(proc.stderr as unknown as ReadableStream).text();
-
-        let output = stderrText ? `${stdoutText}\n${stderrText}` : stdoutText;
-
-        // Truncate output
-        const truncation = _truncateTail(output);
-        const content = truncation.content || "(no output)";
-
-        // Write full output to temp log file if truncated
-        let logPath: string | undefined;
-        if (truncation.truncated) {
-          logPath = _writeTempLog(output);
-          if (truncation.by === "lines") {
-            const startLine = truncation.totalLines - truncation.outputLines + 1;
-            return successResult("", "bash",
-              `${content}\n\n[Showing lines ${startLine}-${truncation.totalLines} of ${truncation.totalLines}. Full output: ${logPath}]`,
-              { exitCode, timedOut, logPath },
-            );
-          }
-          return successResult("", "bash",
-            `${content}\n\n[Showing last ${_formatSize(truncation.outputBytes)} of ${_formatSize(truncation.totalBytes)}. Full output: ${logPath}]`,
-            { exitCode, timedOut, logPath },
-          );
+        if (truncation.lastLinePartial) {
+          outputText += `\n\n[Showing last ${formatSize(truncation.outputBytes)} of line ${endLine}. Full output: ${fullOutputPath}]`;
+        } else if (truncation.truncatedBy === "lines") {
+          outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines}. Full output: ${fullOutputPath}]`;
+        } else {
+          outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_OUTPUT_BYTES)} limit). Full output: ${fullOutputPath}]`;
         }
-
-        const ok = exitCode === 0 && !timedOut && !cancelled;
-        let finalContent = content;
-        if (timedOut) {
-          finalContent += `\n\n[Command timed out after ${timeoutMs}ms]`;
-        } else if (cancelled) {
-          finalContent += "\n\n[Command cancelled]";
-        } else if (exitCode !== 0) {
-          finalContent += `\n\n[Command exited with code ${exitCode}]`;
-        }
-
-        return {
-          toolCallId: "",
-          name: "bash",
-          ok,
-          content: finalContent,
-          details: { exitCode, timedOut, logPath: logPath ?? null },
-        };
-      } finally {
-        if (timeoutId) clearTimeout(timeoutId);
-        if (cancelWatcher) clearInterval(cancelWatcher);
-        try { proc.kill(); } catch { /* already dead */ }
       }
+
+      // Add status
+      let status: string | null = null;
+      if (timedOut) {
+        status = timeout ? `Command timed out after ${timeout} seconds` : "Command timed out";
+      } else if (cancelled) {
+        status = "Command cancelled";
+      } else if (exitCode !== 0) {
+        status = `Command exited with code ${exitCode}`;
+      }
+
+      if (status) {
+        outputText = appendStatusBlock(outputText, status);
+      }
+
+      const ok = exitCode === 0 && !timedOut && !cancelled;
+
+      return {
+        toolCallId: "",
+        name: "bash",
+        ok,
+        content: outputText,
+        error: ok ? undefined : status ?? "Command failed",
+        data: {
+          command,
+          exit_code: exitCode,
+          timed_out: timedOut,
+          cancelled,
+          duration_seconds: Math.round(durationSeconds * 1000) / 1000,
+          truncation: {
+            truncated: truncation.truncated,
+            truncated_by: truncation.truncatedBy,
+            total_lines: truncation.totalLines,
+            output_lines: truncation.outputLines,
+            output_bytes: truncation.outputBytes,
+          },
+          full_output_path: fullOutputPath,
+        },
+      };
     },
   };
 }
 
 // ---------------------------------------------------------------------------
-// Truncation helpers
+// Command execution
 // ---------------------------------------------------------------------------
 
-interface Truncation {
-  content: string;
-  truncated: boolean;
-  by: "lines" | "bytes" | null;
-  totalLines: number;
-  totalBytes: number;
-  outputLines: number;
-  outputBytes: number;
+interface RunOptions {
+  timeout?: number | null;
+  signal?: CancellationToken | null;
 }
 
-function _truncateTail(output: string): Truncation {
-  const lines = output.split("\n");
-  const totalLines = lines.length;
-  const totalBytes = new TextEncoder().encode(output).length;
+interface RunResult {
+  output: string;
+  exitCode: number;
+  timedOut: boolean;
+  cancelled: boolean;
+}
 
-  if (totalLines <= MAX_OUTPUT_LINES && totalBytes <= MAX_OUTPUT_BYTES) {
-    return {
-      content: output,
-      truncated: false,
-      by: null,
-      totalLines,
-      totalBytes,
-      outputLines: totalLines,
-      outputBytes: totalBytes,
-    };
-  }
+async function _runCommand(
+  command: string,
+  cwd: string,
+  opts: RunOptions,
+): Promise<RunResult> {
+  return new Promise((resolve) => {
+    let output = "";
+    let timedOut = false;
+    let cancelled = false;
+    let finished = false;
 
-  // Keep last MAX_OUTPUT_LINES lines
-  let kept = lines.slice(-MAX_OUTPUT_LINES);
-  let keptBytes = new TextEncoder().encode(kept.join("\n")).length;
+    // Spawn in new session for proper process group handling (POSIX)
+    // This allows us to kill the entire process group (pipelines, compound commands)
+    const proc = spawn(command, [], {
+      cwd,
+      shell: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      // @ts-ignore: detached is valid on all platforms
+      detached: process.platform !== "win32",
+    });
 
-  // Byte-limit trim
-  if (keptBytes > MAX_OUTPUT_BYTES) {
-    const trimLines: string[] = [];
-    let bytes = 0;
-    for (const line of kept.reverse()) {
-      const lb = new TextEncoder().encode((trimLines.length ? "\n" : "") + line).length;
-      if (bytes + lb > MAX_OUTPUT_BYTES) break;
-      trimLines.unshift(line);
-      bytes += lb;
+    // Collect stdout and stderr
+    proc.stdout?.on("data", (data: Buffer) => {
+      output += data.toString("utf-8");
+    });
+    proc.stderr?.on("data", (data: Buffer) => {
+      output += data.toString("utf-8");
+    });
+
+    // Timeout handler
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    if (opts.timeout) {
+      timeoutId = setTimeout(() => {
+        if (!finished) {
+          timedOut = true;
+          _killProcessTree(proc);
+        }
+      }, opts.timeout * 1000);
     }
-    kept = trimLines;
-    keptBytes = bytes;
-    return {
-      content: kept.join("\n"),
-      truncated: true,
-      by: "bytes",
-      totalLines,
-      totalBytes,
-      outputLines: kept.length,
-      outputBytes: keptBytes,
-    };
-  }
 
-  return {
-    content: kept.join("\n"),
-    truncated: true,
-    by: "lines",
-    totalLines,
-    totalBytes,
-    outputLines: kept.length,
-    outputBytes: keptBytes,
-  };
+    // Cancellation watcher
+    let cancelWatcherId: ReturnType<typeof setInterval> | null = null;
+    if (opts.signal) {
+      cancelWatcherId = setInterval(() => {
+        if (opts.signal?.isCancelled() && !finished) {
+          cancelled = true;
+          _killProcessTree(proc);
+        }
+      }, 50);
+    }
+
+    // Handle completion
+    proc.on("close", (code) => {
+      finished = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      if (cancelWatcherId) clearInterval(cancelWatcherId);
+
+      resolve({
+        output,
+        exitCode: code ?? (timedOut || cancelled ? -1 : 0),
+        timedOut,
+        cancelled,
+      });
+    });
+
+    proc.on("error", (err) => {
+      finished = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      if (cancelWatcherId) clearInterval(cancelWatcherId);
+
+      resolve({
+        output: `Failed to spawn command: ${err.message}`,
+        exitCode: -1,
+        timedOut: false,
+        cancelled: false,
+      });
+    });
+  });
 }
 
-function _writeTempLog(output: string): string {
+// ---------------------------------------------------------------------------
+// Process killing
+// ---------------------------------------------------------------------------
+
+function _killProcessTree(proc: ChildProcess): void {
+  if (proc.pid === undefined) return;
+
+  try {
+    if (process.platform === "win32") {
+      // Windows: use taskkill to kill process tree
+      spawn("taskkill", ["/pid", String(proc.pid), "/f", "/t"]);
+    } else {
+      // POSIX: kill the process group
+      try {
+        process.kill(-proc.pid, "SIGKILL");
+      } catch {
+        // Fallback: kill just the process
+        proc.kill("SIGKILL");
+      }
+    }
+  } catch {
+    // Process already dead
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function _optionalFloatArg(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    const parsed = parseFloat(value);
+    return isNaN(parsed) ? null : parsed;
+  }
+  return null;
+}
+
+function appendStatusBlock(text: string, status: string): string {
+  return text ? `${text}\n\n${status}` : status;
+}
+
+function _writeTempOutput(output: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), "alpha-bash-"));
   const logPath = path.join(dir, "output.log");
-  writeFileSync(logPath, output, "utf-8");
-  return logPath;
-}
-
-function _formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  return `${(bytes / 1024).toFixed(1)} KB`;
+  try {
+    writeFileSync(logPath, output, "utf-8");
+    return logPath;
+  } catch {
+    return "";
+  }
 }

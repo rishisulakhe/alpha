@@ -174,4 +174,14 @@ export class TuiState {
     this.error = message;
     this.addItem("error", `Error: ${message}`);
   }
+
+  toggleThinking(): boolean {
+    this.showThinking = !this.showThinking;
+    return this.showThinking;
+  }
+
+  toggleToolResults(): boolean {
+    this.showToolResults = !this.showToolResults;
+    return this.showToolResults;
+  }
 }

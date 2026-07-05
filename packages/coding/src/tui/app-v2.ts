@@ -1,14 +1,12 @@
 /**
- * Minimal TUI implementation for Alpha coding agent.
+ * Alpha TUI - Minimal ANSI-based terminal UI with proper streaming.
  *
- * Uses direct ANSI output with differential rendering,
- * matching Pi's approach (not React/Ink).
- *
- * Features:
- * - Streaming message display
- * - Tool call status boxes
- * - Scrolling transcript
- * - Real-time updates
+ * Key features:
+ * - Streams responses line-by-line (like Tau)
+ * - Proper scrolling with page-up/page-down
+ * - Differential rendering for smooth updates
+ * - Thinking indicator
+ * - Tool call display
  */
 
 import * as process from "node:process";
@@ -18,102 +16,21 @@ import { createProvider } from "../provider.ts";
 import type { AgentEvent, ToolCall, AgentToolResult } from "@alpha/agent";
 
 // ---------------------------------------------------------------------------
-// ANSI Utilities
+// Constants
 // ---------------------------------------------------------------------------
 
 const ESC = "\x1b[";
-const CURSOR_TO_BOTTOM = `${ESC}9999;1H`;
-const CLEAR_LINE = `${ESC}2K`;
+const ALT_SCREEN_ENTER = `${ESC}?1049h`;
+const ALT_SCREEN_EXIT = `${ESC}?1049l`;
+const CLEAR_SCREEN = `${ESC}2J${ESC}H`;
 const SHOW_CURSOR = `${ESC}?25h`;
 const HIDE_CURSOR = `${ESC}?25l`;
 const RESET = "\x1b[0m";
 
-function fg(color: number | string, text: string): string {
-  if (typeof color === "number") {
-    return `${ESC}38;5;${color}m${text}${RESET}`;
-  }
-  return `${ESC}38;5;${color}m${text}${RESET}`;
-}
-
-function dim(text: string): string {
-  return `${ESC}2m${text}${RESET}`;
-}
-
-function bold(text: string): string {
-  return `${ESC}1m${text}${RESET}`;
-}
-
-function green(text: string): string {
-  return fg(2, text);
-}
-
-function cyan(text: string): string {
-  return fg(6, text);
-}
-
-function yellow(text: string): string {
-  return fg(3, text);
-}
-
-function red(text: string): string {
-  return fg(1, text);
-}
-
-function magenta(text: string): string {
-  return fg(5, text);
-}
-
-function truncate(str: string, width: number): string {
-  // Handle ANSI codes properly
-  let visibleLen = 0;
-  let result = "";
-  let inEscape = false;
-
-  for (let i = 0; i < str.length && visibleLen < width; i++) {
-    const char = str[i]!;
-    if (char === "\x1b") {
-      inEscape = true;
-      result += char;
-    } else if (inEscape) {
-      result += char;
-      if (char === "m") inEscape = false;
-    } else {
-      result += char;
-      visibleLen++;
-    }
-  }
-
-  if (visibleLen >= width) {
-    return result + RESET;
-  }
-  return result;
-}
-
-function repeat(char: string, count: number): string {
-  return char.repeat(Math.max(0, count));
-}
+const RENDER_INTERVAL_MS = 50; // ~20 FPS for smooth streaming
 
 // ---------------------------------------------------------------------------
-// Terminal Helpers
-// ---------------------------------------------------------------------------
-
-function getTermSize(): { width: number; height: number } {
-  return {
-    width: process.stdout.columns ?? 80,
-    height: process.stdout.rows ?? 24,
-  };
-}
-
-function clearScreen(): void {
-  process.stdout.write(`${ESC}2J${ESC}H`);
-}
-
-function moveTo(row: number, col: number): void {
-  process.stdout.write(`${ESC}${row};${col}H`);
-}
-
-// ---------------------------------------------------------------------------
-// Chat Item Types
+// Types
 // ---------------------------------------------------------------------------
 
 type ChatItemRole = "user" | "assistant" | "tool" | "thinking" | "error" | "status";
@@ -124,148 +41,282 @@ interface ChatItem {
   text: string;
   toolName?: string;
   toolOk?: boolean;
+  /** For streaming - indicates this item is still being updated */
+  streaming?: boolean;
 }
 
 // ---------------------------------------------------------------------------
-// TUI State
+// TuiState - Mutable display state (like Tau's TuiState)
 // ---------------------------------------------------------------------------
 
 class TuiState {
   items: ChatItem[] = [];
   assistantBuffer = "";
   running = false;
+  error: string | null = null;
   input = "";
   provider = "demo";
   model = "loading...";
   tokens = 0;
+  scrollOffset = 0;
+  userHasScrolled = false;
+  showThinking = true;
 
   private _nextId = 1;
-  scrollOffset = 0; // public for rendering
+  private _termHeight = 24;
+  private _termWidth = 80;
 
-  addItem(role: ChatItemRole, text: string, opts: { toolName?: string; toolOk?: boolean } = {}): void {
+  updateTermSize(width: number, height: number): void {
+    this._termWidth = width;
+    this._termHeight = height;
+  }
+
+  get termHeight(): number { return this._termHeight; }
+  get termWidth(): number { return this._termWidth; }
+
+  addItem(role: ChatItemRole, text: string, opts: { toolName?: string; toolOk?: boolean; streaming?: boolean } = {}): void {
+    // For assistant streaming, update the last item if it's still streaming
+    if (role === "assistant" && this.items.length > 0) {
+      const lastItem = this.items[this.items.length - 1];
+      if (lastItem?.role === "assistant" && lastItem.streaming) {
+        lastItem.text = text;
+        this._autoScroll();
+        return;
+      }
+    }
+
+    // For thinking, just update placeholder
+    if (role === "thinking") {
+      const existingThinking = this.items.find(i => i.role === "thinking" && i.streaming);
+      if (existingThinking) {
+        existingThinking.text = "💭 Thinking...";
+        return;
+      }
+    }
+
     this.items.push({
       id: this._nextId++,
       role,
       text,
       ...opts,
     });
-    // Auto-scroll to bottom
-    const termHeight = getTermSize().height;
-    const maxVisible = termHeight - 8; // Reserve for header, input, status
-    this.scrollOffset = Math.max(0, this.items.length - maxVisible);
+    this._autoScroll();
+  }
+
+  /** Append a text delta to the current assistant message (streaming) */
+  appendAssistantDelta(delta: string): void {
+    const lastItem = this.items[this.items.length - 1];
+    if (lastItem?.role === "assistant" && lastItem.streaming) {
+      lastItem.text += delta;
+    } else {
+      // Start a new streaming assistant message
+      this.items.push({
+        id: this._nextId++,
+        role: "assistant",
+        text: delta,
+        streaming: true,
+      });
+    }
+    this._autoScroll();
+  }
+
+  /** Append thinking delta */
+  appendThinkingDelta(_delta: string): void {
+    // Show thinking indicator
+    const existingThinking = this.items.find(i => i.role === "thinking" && i.streaming);
+    if (!existingThinking) {
+      this.items.push({
+        id: this._nextId++,
+        role: "thinking",
+        text: "💭 Thinking...",
+        streaming: true,
+      });
+      this._autoScroll();
+    }
+  }
+
+  /** Finalize the current assistant message */
+  finishAssistantMessage(): void {
+    const lastItem = this.items[this.items.length - 1];
+    if (lastItem?.role === "assistant") {
+      lastItem.streaming = false;
+    }
+    // Remove thinking indicator if present
+    const thinkingIdx = this.items.findIndex(i => i.role === "thinking" && i.streaming);
+    if (thinkingIdx >= 0) {
+      this.items.splice(thinkingIdx, 1);
+    }
+  }
+
+  /** Add a tool call */
+  addToolCall(call: ToolCall): void {
+    // Remove thinking if present
+    const thinkingIdx = this.items.findIndex(i => i.role === "thinking");
+    if (thinkingIdx >= 0) {
+      this.items.splice(thinkingIdx, 1);
+    }
+
+    this.items.push({
+      id: this._nextId++,
+      role: "tool",
+      text: this._formatToolCall(call),
+      toolName: call.name,
+      streaming: true,
+    });
+    this._autoScroll();
+  }
+
+  /** Record a tool result */
+  recordToolResult(result: AgentToolResult): void {
+    // Find the matching tool call
+    const lastTool = this.items.find(i => i.role === "tool" && i.streaming);
+    if (lastTool) {
+      lastTool.streaming = false;
+      lastTool.toolOk = result.ok;
+      lastTool.text = this._formatToolResult(result);
+    } else {
+      this.items.push({
+        id: this._nextId++,
+        role: "tool",
+        text: this._formatToolResult(result),
+        toolName: result.name,
+        toolOk: result.ok,
+      });
+    }
+    this._autoScroll();
   }
 
   clear(): void {
     this.items = [];
     this.assistantBuffer = "";
     this.scrollOffset = 0;
+    this.userHasScrolled = false;
+    this.error = null;
   }
 
-  scrollUp(): void {
+  scrollUp(lines: number = 1): void {
     if (this.scrollOffset > 0) {
-      this.scrollOffset--;
+      this.scrollOffset = Math.max(0, this.scrollOffset - lines);
+      this.userHasScrolled = true;
     }
   }
 
-  scrollDown(): void {
-    const termHeight = getTermSize().height;
-    const maxVisible = termHeight - 8;
-    const maxOffset = Math.max(0, this.items.length - maxVisible);
+  scrollDown(lines: number = 1): void {
+    const maxOffset = Math.max(0, this.items.length - this._getVisibleLines());
     if (this.scrollOffset < maxOffset) {
-      this.scrollOffset++;
+      this.scrollOffset = Math.min(maxOffset, this.scrollOffset + lines);
+      if (this.scrollOffset >= maxOffset) {
+        this.userHasScrolled = false;
+      }
     }
   }
 
-  getVisibleItems(termHeight: number): ChatItem[] {
-    const maxVisible = Math.max(1, termHeight - 8);
-    return this.items.slice(this.scrollOffset, this.scrollOffset + maxVisible);
+  scrollPageUp(): void {
+    this.scrollUp(Math.floor(this._termHeight / 2));
   }
 
-  formatToolCall(call: ToolCall): string {
+  scrollPageDown(): void {
+    this.scrollDown(Math.floor(this._termHeight / 2));
+  }
+
+  scrollToBottom(): void {
+    this.scrollOffset = 0;
+    this.userHasScrolled = false;
+  }
+
+  getVisibleItems(): ChatItem[] {
+    const visibleLines = this._getVisibleLines();
+    // Show from the end (newest) backward
+    const start = Math.max(0, this.items.length - visibleLines - this.scrollOffset);
+    const end = this.items.length - this.scrollOffset;
+    return this.items.slice(start, end);
+  }
+
+  private _getVisibleLines(): number {
+    // Reserve 4 lines for header, input, and status
+    return Math.max(1, this._termHeight - 5);
+  }
+
+  private _autoScroll(): void {
+    if (!this.userHasScrolled) {
+      this.scrollOffset = 0;
+    }
+  }
+
+  private _formatToolCall(call: ToolCall): string {
     const args = call.arguments as Record<string, unknown>;
     const firstKey = Object.keys(args)[0];
     if (firstKey && typeof args[firstKey] === "string") {
       const val = args[firstKey] as string;
-      return `${call.name}: ${firstKey}=${val.slice(0, 40)}${val.length > 40 ? "…" : ""}`;
+      const preview = val.slice(0, 50);
+      return `→ ${call.name}: ${firstKey}=${preview}${val.length > 50 ? "…" : ""}`;
     }
-    return call.name;
+    return `→ ${call.name}`;
   }
 
-  formatToolResult(result: AgentToolResult): string {
-    const status = result.ok ? green("✓") : red("✗");
+  private _formatToolResult(result: AgentToolResult): string {
+    const status = result.ok ? "✓" : "✗";
     const content = result.content.slice(0, 100).replace(/\n/g, " ");
     return `${status} ${result.name}: ${content}${result.content.length > 100 ? "…" : ""}`;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Event Adapter
+// TuiEventAdapter - Apply agent events to TuiState (like Tau's adapter)
 // ---------------------------------------------------------------------------
 
-class EventAdapter {
+class TuiEventAdapter {
   constructor(private state: TuiState) {}
 
   apply(event: AgentEvent): void {
     switch (event.type) {
       case "agent_start":
         this.state.running = true;
+        this.state.error = null;
         break;
 
       case "agent_end":
-        if (this.state.assistantBuffer) {
-          this.state.addItem("assistant", this.state.assistantBuffer);
-          this.state.assistantBuffer = "";
-        }
+        this.state.finishAssistantMessage();
         this.state.running = false;
         break;
 
-      case "thinking_delta":
-        // Accumulate thinking - show as collapsed block
-        const lastItem = this.state.items[this.state.items.length - 1];
-        if (lastItem?.role === "thinking" && lastItem.text.length < 200) {
-          lastItem.text += event.text;
-        } else {
-          this.state.addItem("thinking", event.text);
-        }
+      case "message_start":
+        // Handled per-type below
         break;
 
       case "message_delta":
-        this.state.assistantBuffer += event.text;
+        this.state.appendAssistantDelta(event.text);
+        break;
+
+      case "thinking_delta":
+        this.state.appendThinkingDelta(event.text);
         break;
 
       case "message_end": {
         const msg = event.message;
         if (msg.role === "user") {
           this.state.addItem("user", msg.content);
-        } else if (msg.role === "assistant" && !msg.tool_calls?.length) {
-          if (this.state.assistantBuffer || msg.content) {
-            this.state.addItem("assistant", msg.content || this.state.assistantBuffer);
-            this.state.assistantBuffer = "";
+        } else if (msg.role === "assistant") {
+          // Finalize the streaming message
+          this.state.finishAssistantMessage();
+          // If there's content, replace the streaming text with final content
+          if (msg.content) {
+            this.state.addItem("assistant", msg.content);
           }
+        } else if (msg.role === "tool") {
+          // Tool result - already handled by tool_execution_end
         }
         break;
       }
 
       case "tool_execution_start":
         if (event.call) {
-          this.state.addItem("tool", this.state.formatToolCall(event.call), {
-            toolName: event.call.name,
-          });
+          this.state.addToolCall(event.call);
         }
         break;
 
       case "tool_execution_end":
-        // Update last tool item with result
-        const lastTool = this.state.items[this.state.items.length - 1];
-        if (lastTool?.role === "tool" && lastTool.toolName === event.result.name) {
-          lastTool.text = this.state.formatToolResult(event.result);
-          lastTool.toolOk = event.result.ok;
-        } else {
-          this.state.addItem("tool", this.state.formatToolResult(event.result), {
-            toolName: event.result.name,
-            toolOk: event.result.ok,
-          });
-        }
+        this.state.recordToolResult(event.result);
         break;
 
       case "retry":
@@ -273,92 +324,123 @@ class EventAdapter {
         break;
 
       case "error":
-        this.state.addItem("error", `Error: ${event.message}`);
-        if (!event.recoverable) {
-          this.state.running = false;
+        this.state.finishAssistantMessage();
+        if (event.recoverable && event.message === "Agent run cancelled") {
+          this.state.addItem("status", "Cancelled.");
+        } else {
+          this.state.error = event.message;
+          this.state.addItem("error", `Error: ${event.message}`);
+          if (!event.recoverable) {
+            this.state.running = false;
+          }
         }
+        break;
+
+      case "turn_start":
+      case "turn_end":
+      case "queue_update":
+        // Not displayed in simple TUI
         break;
     }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Renderer
+// Rendering
 // ---------------------------------------------------------------------------
 
+function fg(color: number | string, text: string): string {
+  if (typeof color === "number") {
+    return `${ESC}38;5;${color}m${text}${RESET}`;
+  }
+  return `${ESC}38;5;${color}m${text}${RESET}`;
+}
+
+function dim(text: string): string { return `${ESC}2m${text}${RESET}`; }
+function bold(text: string): string { return `${ESC}1m${text}${RESET}`; }
+function green(text: string): string { return fg(2, text); }
+function cyan(text: string): string { return fg(6, text); }
+function yellow(text: string): string { return fg(3, text); }
+function red(text: string): string { return fg(1, text); }
+function magenta(text: string): string { return fg(5, text); }
+
+function truncate(str: string, width: number): string {
+  if (str.length <= width) return str;
+  return str.slice(0, width - 1) + "…";
+}
+
+function repeat(char: string, count: number): string {
+  return char.repeat(Math.max(0, count));
+}
+
 function renderTui(state: TuiState): string {
-  const { width, height } = getTermSize();
+  const { termWidth, termHeight } = state;
   const lines: string[] = [];
 
-  // Header: status line
-  const headerLine = `${cyan("α")} ${dim(state.provider)}:${state.model} ${dim("│")} tokens: ~${state.tokens}`;
-  lines.push(truncate(headerLine, width));
+  // Header
+  const statusColor = state.running ? yellow : cyan;
+  const statusIcon = state.running ? "⏳" : "α";
+  lines.push(`${statusColor(statusIcon)} ${dim(state.provider)}:${state.model} ${dim("│")} tokens: ~${state.tokens}`);
+  lines.push(dim(repeat("─", termWidth - 1)));
 
-  // Divider
-  lines.push(dim(repeat("─", width - 1)));
-
-  // Chat items
-  const visibleItems = state.getVisibleItems(height);
-  const maxItems = height - 8; // Reserve for header, dividers, input, footer
+  // Chat area
+  const chatHeight = termHeight - 5;
+  const items = state.getVisibleItems();
 
   // Scroll indicator
   if (state.scrollOffset > 0) {
-    lines.push(dim(`↑ ${state.scrollOffset} more above`));
+    lines.push(dim(`↑ more above (${state.scrollOffset} lines)`));
   }
 
-  for (const item of visibleItems.slice(0, maxItems)) {
-    switch (item.role) {
-      case "user":
-        lines.push(`${cyan("❯")} ${item.text}`);
-        break;
-      case "assistant":
-        lines.push(`${green("❮")} ${item.text.slice(0, 500)}`);
-        break;
-      case "thinking":
-        lines.push(`${magenta("💭")} ${dim(item.text.slice(0, 150))}${item.text.length > 150 ? "…" : ""}`);
-        break;
-      case "tool":
-        lines.push(`${yellow("⚙")} ${item.text}`);
-        break;
-      case "error":
-        lines.push(`${red("✗")} ${item.text}`);
-        break;
-      case "status":
-        lines.push(dim(`• ${item.text}`));
-        break;
+  for (const item of items) {
+    // Skip thinking if not shown
+    if (item.role === "thinking" && !state.showThinking) continue;
+
+    const itemLines = item.text.split("\n");
+    for (const line of itemLines) {
+      const truncated = truncate(line, termWidth - 3);
+      switch (item.role) {
+        case "user":
+          lines.push(`${cyan("❯")} ${truncated}`);
+          break;
+        case "assistant":
+          lines.push(`${green("❮")} ${truncated}`);
+          break;
+        case "thinking":
+          lines.push(`${magenta("💭")} ${dim(truncated)}`);
+          break;
+        case "tool":
+          const icon = item.toolOk === false ? red("✗") : item.toolOk === true ? green("✓") : yellow("⚙");
+          lines.push(`${icon} ${truncated}`);
+          break;
+        case "error":
+          lines.push(`${red("✗")} ${truncated}`);
+          break;
+        case "status":
+          lines.push(dim(`• ${truncated}`));
+          break;
+      }
     }
   }
 
-  // Show streaming buffer
-  if (state.assistantBuffer) {
-    lines.push(`${green("❮")} ${state.assistantBuffer.slice(-200)}`);
-  }
-
-  // Scroll indicator below
-  const totalItems = state.items.length;
-  const itemsBelow = totalItems - state.scrollOffset - maxItems;
-  if (itemsBelow > 0) {
-    lines.push(dim(`↓ ${itemsBelow} more below`));
-  }
-
-  // Pad to fill space
-  while (lines.length < height - 4) {
+  // Fill remaining space
+  while (lines.length < chatHeight + 2) {
     lines.push("");
   }
 
-  // Divider
-  lines.push(dim(repeat("─", width - 1)));
+  // Footer
+  lines.push(dim(repeat("─", termWidth - 1)));
 
   // Input line
   const promptSymbol = state.running ? yellow("⏳") : cyan("❯");
-  const inputLine = `${promptSymbol} ${state.input}${state.running ? "" : "█"}`;
-  lines.push(truncate(inputLine, width));
+  const cursor = state.running ? "" : "█";
+  lines.push(`${promptSymbol} ${state.input}${cursor}`);
 
-  // Footer
+  // Status line
   const footerLine = state.running
-    ? yellow("Working... (Esc to cancel, Ctrl+D to quit)")
-    : dim("Enter to submit │ PgUp/PgDn or ↑↓ to scroll │ Esc cancel │ Ctrl+D quit");
-  lines.push(truncate(footerLine, width));
+    ? yellow("Working... (Esc cancel, Ctrl+D quit)")
+    : dim("Enter send │ ↑↓ scroll │ PgUp/PgDn │ End bottom │ Esc cancel │ Ctrl+D quit");
+  lines.push(truncate(footerLine, termWidth));
 
   return lines.join("\n");
 }
@@ -377,10 +459,17 @@ export async function runTuiApp(): Promise<void> {
   // Setup terminal
   process.stdin.setRawMode(true);
   process.stdin.resume();
+  process.stdout.write(ALT_SCREEN_ENTER);
   process.stdout.write(HIDE_CURSOR);
 
   const state = new TuiState();
-  const adapter = new EventAdapter(state);
+  const adapter = new TuiEventAdapter(state);
+
+  // Get terminal size
+  function updateTermSize(): void {
+    state.updateTermSize(process.stdout.columns ?? 80, process.stdout.rows ?? 24);
+  }
+  updateTermSize();
 
   // Load session
   const { provider, model, providerName } = createProvider();
@@ -397,14 +486,39 @@ export async function runTuiApp(): Promise<void> {
   state.model = session.model;
 
   let pendingPrompt = "";
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let runningPrompt: AsyncIterable<any> | null = null;
+  let lastRenderTime = 0;
+  let rendering = false;
+  let renderScheduled = false;
 
-  // Render function
+  function scheduleRender(): void {
+    if (rendering) return;
+
+    const now = Date.now();
+    const timeSinceLastRender = now - lastRenderTime;
+
+    if (timeSinceLastRender >= RENDER_INTERVAL_MS) {
+      render();
+    } else if (!renderScheduled) {
+      renderScheduled = true;
+      setTimeout(() => {
+        if (!rendering) {
+          render();
+        }
+      }, RENDER_INTERVAL_MS - timeSinceLastRender);
+    }
+  }
+
   function render(): void {
-    const output = renderTui(state);
-    clearScreen();
-    process.stdout.write(output);
+    if (rendering) return;
+    rendering = true;
+    try {
+      updateTermSize();
+      process.stdout.write(`${ESC}H${ESC}J${renderTui(state)}`);
+      lastRenderTime = Date.now();
+      renderScheduled = false;
+    } finally {
+      rendering = false;
+    }
   }
 
   // Input handler
@@ -423,20 +537,24 @@ export async function runTuiApp(): Promise<void> {
         session.cancel();
         state.addItem("status", "Cancelled");
         state.running = false;
-        runningPrompt = null;
         render();
       }
       return;
     }
 
-    // Arrow keys for scrolling
+    // Scroll keys
     if (str === "\x1b[A" || str === "\x1b[5~") { // Up or PgUp
-      state.scrollUp();
+      state.scrollUp(str === "\x1b[5~" ? 10 : 1);
       render();
       return;
     }
     if (str === "\x1b[B" || str === "\x1b[6~") { // Down or PgDn
-      state.scrollDown();
+      state.scrollDown(str === "\x1b[6~" ? 10 : 1);
+      render();
+      return;
+    }
+    if (str === "\x1b[F" || str === "\x1b[4~") { // End key
+      state.scrollToBottom();
       render();
       return;
     }
@@ -476,21 +594,21 @@ export async function runTuiApp(): Promise<void> {
   async function submitPrompt(text: string): Promise<void> {
     state.addItem("user", text);
     state.running = true;
+    state.scrollToBottom();
     render();
 
     try {
-      runningPrompt = session.prompt(text);
-      for await (const event of runningPrompt) {
+      for await (const event of session.prompt(text)) {
         adapter.apply(event);
         state.tokens = session.contextTokenEstimate;
-        render();
+        scheduleRender();
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       state.addItem("error", msg);
     } finally {
       state.running = false;
-      runningPrompt = null;
+      state.finishAssistantMessage();
     }
     render();
   }
@@ -500,7 +618,7 @@ export async function runTuiApp(): Promise<void> {
     process.stdin.setRawMode(false);
     process.stdin.pause();
     process.stdout.write(SHOW_CURSOR);
-    clearScreen();
+    process.stdout.write(ALT_SCREEN_EXIT);
   }
 
   // Setup input handler

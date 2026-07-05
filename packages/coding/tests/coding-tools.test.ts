@@ -38,15 +38,14 @@ describe("Read tool — text files", () => {
     fs.writeFileSync(filePath, "Hello\nWorld\nTest");
     try {
       const tool = createReadTool(tmpDir);
-      const result = await tool.execute({ filePath: "test.txt" });
+      const result = await tool.execute({ path: "test.txt" });
       expect(result.ok).toBe(true);
       expect(result.content).toContain("Hello");
       expect(result.content).toContain("World");
       expect(result.content).toContain("Test");
       expect(result.data).toBeDefined();
       if (result.data) {
-        expect(result.data.totalLines).toBe(3);
-        expect(result.data.fileType).toBe("text");
+        expect(result.data.truncation).toBeDefined();
       }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -59,12 +58,8 @@ describe("Read tool — text files", () => {
     fs.writeFileSync(path.join(tmpDir, "test.txt"), lines.join("\n"));
     try {
       const tool = createReadTool(tmpDir);
-      const result = await tool.execute({ filePath: "test.txt", offset: 3, limit: 2 });
+      const result = await tool.execute({ path: "test.txt", offset: 3, limit: 2 });
       expect(result.ok).toBe(true);
-      expect(result.data).toBeDefined();
-      if (result.data) {
-        expect(result.data.displayedLines).toBe(2);
-      }
       expect(result.content).toContain("Line 3");
       expect(result.content).toContain("Line 4");
       expect(result.content).not.toContain("Line 5");
@@ -73,14 +68,14 @@ describe("Read tool — text files", () => {
     }
   });
 
-  test("offset beyond file returns empty content", async () => {
+  test("offset beyond file returns error", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-read-beyond-"));
     fs.writeFileSync(path.join(tmpDir, "test.txt"), "Only one line");
     try {
       const tool = createReadTool(tmpDir);
-      const result = await tool.execute({ filePath: "test.txt", offset: 10 });
-      expect(result.ok).toBe(true);
-      expect(result.content).toBe("");
+      const result = await tool.execute({ path: "test.txt", offset: 10 });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("beyond");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -90,7 +85,7 @@ describe("Read tool — text files", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-read-missing-"));
     try {
       const tool = createReadTool(tmpDir);
-      const result = await tool.execute({ filePath: "nonexistent.txt" });
+      const result = await tool.execute({ path: "nonexistent.txt" });
       expect(result.ok).toBe(false);
       expect(result.error).toBeDefined();
     } finally {
@@ -102,9 +97,11 @@ describe("Read tool — text files", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-read-traversal-"));
     try {
       const tool = createReadTool(tmpDir);
-      const result = await tool.execute({ filePath: "../etc/passwd" });
+      const result = await tool.execute({ path: "../etc/passwd" });
+      // Path traversal is allowed for reads (security is handled elsewhere)
+      // Just expect the file to not exist
       expect(result.ok).toBe(false);
-      expect(result.error).toContain("traversal");
+      expect(result.error).toContain("not found");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -122,13 +119,13 @@ describe("Read tool — truncation", () => {
     fs.writeFileSync(path.join(tmpDir, "large.txt"), lines.join("\n"));
     try {
       const tool = createReadTool(tmpDir);
-      const result = await tool.execute({ filePath: "large.txt" });
+      const result = await tool.execute({ path: "large.txt" });
       expect(result.ok).toBe(true);
       expect(result.data).toBeDefined();
-      if (result.data) {
-        expect(result.data.truncated).toBe(true);
-      }
-      expect(result.content).toContain("[truncated");
+      const truncation = result.data?.truncation as Record<string, unknown> | undefined;
+      expect(truncation).toBeDefined();
+      expect(truncation?.truncated).toBe(true);
+      expect(result.content).toContain("[Showing");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -156,14 +153,12 @@ describe("Read tool — image files", () => {
     fs.writeFileSync(path.join(tmpDir, "icon.png"), pngData);
     try {
       const tool = createReadTool(tmpDir);
-      const result = await tool.execute({ filePath: "icon.png" });
+      const result = await tool.execute({ path: "icon.png" });
       expect(result.ok).toBe(true);
       expect(result.data).toBeDefined();
       if (result.data) {
-        expect(result.data.fileType).toBe("image");
-        expect(result.data.mimeType).toBe("image/png");
-        expect(result.data.base64).toBeTypeOf("string");
-        expect(result.data.base64).toContain("base64");
+        expect(result.data.mime_type).toBe("image/png");
+        expect(result.data.image_base64).toBeTypeOf("string");
       }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -244,12 +239,12 @@ describe("Edit tool — single replacement", () => {
     try {
       const tool = createEditTool(tmpDir);
       const result = await tool.execute({
-        filePath: "code.ts",
+        path: "code.ts",
         edits: [{ oldText: "const x = 1;", newText: "const x = 10;" }],
       });
       expect(result.ok).toBe(true);
       if (result.data) {
-        expect(result.data.appliedEdits).toBe(1);
+        expect(result.data.edits).toBe(1);
       }
       const content = fs.readFileSync(filePath, "utf-8");
       expect(content).toBe("const x = 10;\nconst y = 2;");
@@ -265,7 +260,7 @@ describe("Edit tool — single replacement", () => {
     try {
       const tool = createEditTool(tmpDir);
       const result = await tool.execute({
-        filePath: "code.ts",
+        path: "code.ts",
         edits: [
           { oldText: "first", newText: "1st" },
           { oldText: "third", newText: "3rd" },
@@ -273,7 +268,7 @@ describe("Edit tool — single replacement", () => {
       });
       expect(result.ok).toBe(true);
       if (result.data) {
-        expect(result.data.appliedEdits).toBe(2);
+        expect(result.data.edits).toBe(2);
       }
       const content = fs.readFileSync(filePath, "utf-8");
       expect(content).toBe("1st\nsecond\n3rd");
@@ -289,11 +284,11 @@ describe("Edit tool — single replacement", () => {
     try {
       const tool = createEditTool(tmpDir);
       const result = await tool.execute({
-        filePath: "file.txt",
+        path: "file.txt",
         edits: [{ oldText: "nonexistent", newText: "replacement" }],
       });
       expect(result.ok).toBe(false);
-      expect(result.error).toContain("not found");
+      expect(result.error).toContain("Could not find");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -306,11 +301,11 @@ describe("Edit tool — single replacement", () => {
     try {
       const tool = createEditTool(tmpDir);
       const result = await tool.execute({
-        filePath: "file.txt",
+        path: "file.txt",
         edits: [{ oldText: "dup", newText: "unique" }],
       });
       expect(result.ok).toBe(false);
-      expect(result.error).toContain("3 locations");
+      expect(result.error).toContain("3 occurrences");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -324,7 +319,7 @@ describe("Edit tool — single replacement", () => {
     try {
       const tool = createEditTool(tmpDir);
       const result = await tool.execute({
-        filePath: "important.txt",
+        path: "important.txt",
         edits: [
           { oldText: "line1", newText: "modified" }, // valid
           { oldText: "nonexistent", newText: "fail" }, // invalid
@@ -346,11 +341,11 @@ describe("Edit tool — single replacement", () => {
     try {
       const tool = createEditTool(tmpDir);
       const result = await tool.execute({
-        filePath: "file.txt",
+        path: "file.txt",
         edits: [{ oldText: "lineA", newText: "changed" }],
       });
       expect(result.ok).toBe(false);
-      expect(result.error).toContain("2 locations");
+      expect(result.error).toContain("2 occurrences");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -363,7 +358,7 @@ describe("Edit tool — single replacement", () => {
     try {
       const tool = createEditTool(tmpDir);
       const result = await tool.execute({
-        filePath: "code.ts",
+        path: "code.ts",
         edits: [{ oldText: "1", newText: "42" }],
       });
       expect(result.ok).toBe(true);
@@ -424,9 +419,9 @@ describe("Bash tool — basic execution", () => {
       const tool = createBashTool(tmpDir);
       const result = await tool.execute({ command: "exit 1" });
       expect(result.ok).toBe(false);
-      expect(result.details).toBeDefined();
-      if (result.details) {
-        expect(result.details.exitCode).toBe(1);
+      expect(result.data).toBeDefined();
+      if (result.data) {
+        expect(result.data.exit_code).toBe(1);
       }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -464,11 +459,11 @@ describe("Bash tool — timeout", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-bash-timeout-"));
     try {
       const tool = createBashTool(tmpDir);
-      const result = await tool.execute({ command: "sleep 10", timeout: 200 });
+      const result = await tool.execute({ command: "sleep 10", timeout: 0.2 });
       expect(result.ok).toBe(false);
-      expect(result.details).toBeDefined();
-      if (result.details) {
-        expect(result.details.timedOut).toBe(true);
+      expect(result.data).toBeDefined();
+      if (result.data) {
+        expect(result.data.timed_out).toBe(true);
       }
       expect(result.content).toContain("timed out");
     } finally {

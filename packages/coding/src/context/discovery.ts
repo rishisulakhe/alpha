@@ -13,6 +13,13 @@ export interface ProjectContextFile {
   source: "home" | "project" | "local";
 }
 
+export interface ResourceDiagnostic {
+  kind: "skill" | "prompt_template" | "context" | "provider";
+  path: string;
+  message: string;
+  level: "error" | "warning" | "info";
+}
+
 // ---------------------------------------------------------------------------
 // discoverProjectContext
 // ---------------------------------------------------------------------------
