@@ -20,45 +20,26 @@ import { CompactInfoBar, ActivityIndicator } from "./sidebar.tsx";
 
 const SCROLL_TICK = 3;
 
-function useScroll(itemCount: number, viewportHeight: number) {
+function useScroll(lineCount: number, viewportHeight: number) {
   const [scrollOffset, setScrollOffset] = useState(0);
-  const [userScrolled, setUserScrolled] = useState(false);
-  const offsetRef = useRef(0);
-  const userScrolledRef = useRef(false);
 
-  const maxOffset = Math.max(0, itemCount - viewportHeight);
-
-  useEffect(() => {
-    if (!userScrolledRef.current) {
-      offsetRef.current = maxOffset;
-      setScrollOffset(maxOffset);
-    }
-  }, [itemCount, viewportHeight, maxOffset]);
+  const maxOffset = Math.max(0, lineCount - viewportHeight);
 
   const scrollUp = useCallback((lines = 1) => {
-    const next = Math.max(0, offsetRef.current - lines);
-    offsetRef.current = next;
-    userScrolledRef.current = next < maxOffset;
-    setScrollOffset(next);
-    setUserScrolled(userScrolledRef.current);
+    setScrollOffset((prev) => Math.min(maxOffset, prev + lines));
   }, [maxOffset]);
 
   const scrollDown = useCallback((lines = 1) => {
-    const next = Math.min(maxOffset, offsetRef.current + lines);
-    offsetRef.current = next;
-    userScrolledRef.current = next < maxOffset;
-    setScrollOffset(next);
-    setUserScrolled(userScrolledRef.current);
-  }, [maxOffset]);
+    setScrollOffset((prev) => Math.max(0, prev - lines));
+  }, []);
 
   const scrollToBottom = useCallback(() => {
-    offsetRef.current = maxOffset;
-    userScrolledRef.current = false;
-    setScrollOffset(maxOffset);
-    setUserScrolled(false);
-  }, [maxOffset]);
+    setScrollOffset(0);
+  }, []);
 
-  return { scrollOffset, userScrolled, scrollUp, scrollDown, scrollToBottom };
+  const start = Math.max(0, lineCount - viewportHeight - scrollOffset);
+
+  return { start, scrollUp, scrollDown, scrollToBottom };
 }
 
 function useSession() {
@@ -139,9 +120,69 @@ function roleIcon(role: ChatItem["role"]): string {
   }
 }
 
-function truncate(str: string, max: number): string {
-  if (str.length <= max) return str;
-  return str.slice(0, max - 1) + "\u2026";
+function wrapLine(line: string, maxWidth: number): string[] {
+  if (maxWidth <= 0) return [line];
+  if (line.length <= maxWidth) return [line];
+  const result: string[] = [];
+  let remaining = line;
+  while (remaining.length > 0) {
+    if (remaining.length <= maxWidth) {
+      result.push(remaining);
+      break;
+    }
+    const spaceIdx = remaining.lastIndexOf(" ", maxWidth);
+    const breakAt = spaceIdx > maxWidth / 2 ? spaceIdx : maxWidth;
+    if (breakAt <= 0) {
+      result.push(remaining.slice(0, maxWidth));
+      remaining = remaining.slice(maxWidth);
+    } else {
+      result.push(remaining.slice(0, breakAt).trimEnd());
+      remaining = remaining.slice(breakAt).trimStart();
+    }
+  }
+  return result;
+}
+
+interface DisplayLine {
+  text: string;
+  color?: string;
+  dim: boolean;
+  icon: string;
+  key: string;
+}
+
+function buildDisplayLines(
+  items: ChatItem[],
+  streamingText: string,
+  showThinking: boolean,
+  maxLen: number,
+): DisplayLine[] {
+  const lines: DisplayLine[] = [];
+
+  for (const item of items) {
+    if (item.role === "thinking" && !showThinking) continue;
+    const color = roleColor(item.role);
+    const icon = roleIcon(item.role);
+    const dim = item.role === "thinking" || item.role === "tool" || item.role === "status";
+
+    for (const raw of item.text.split("\n")) {
+      const wrapped = wrapLine(raw, maxLen);
+      for (const w of wrapped) {
+        lines.push({ text: `${icon} ${w}`, color, dim, icon, key: `${item.id}-${lines.length}` });
+      }
+    }
+  }
+
+  if (streamingText) {
+    for (const raw of streamingText.split("\n")) {
+      const wrapped = wrapLine(raw, maxLen);
+      for (const w of wrapped) {
+        lines.push({ text: `← ${w}`, color: "green", dim: false, icon: "←", key: `stream-${lines.length}` });
+      }
+    }
+  }
+
+  return lines;
 }
 
 function TranscriptView({
@@ -149,31 +190,28 @@ function TranscriptView({
   streamingText,
   running,
   showThinking,
-  scrollOffset,
+  start,
   height,
 }: {
   items: ChatItem[];
   streamingText: string;
   running: boolean;
   showThinking: boolean;
-  scrollOffset: number;
+  start: number;
   height: number;
 }) {
-  const filtered = showThinking
-    ? items
-    : items.filter((i) => i.role !== "thinking");
-
-  const visible = filtered.slice(scrollOffset, scrollOffset + height);
-  const hasAbove = scrollOffset > 0;
-  const hasBelow = scrollOffset + height < filtered.length;
-
   const termWidth = process.stdout.columns ?? 80;
-  const maxLen = termWidth - 4;
+  const maxLen = Math.max(10, termWidth - 4);
+
+  const allLines = buildDisplayLines(items, streamingText, showThinking, maxLen);
+  const visible = allLines.slice(start, start + height);
+  const hasAbove = start > 0;
+  const hasBelow = start + height < allLines.length;
 
   return (
     <Box flexDirection="column" flexGrow={1} paddingX={1}>
       {hasAbove && (
-        <Text dimColor>{"\u2191"} {scrollOffset} lines above</Text>
+        <Text dimColor>{"\u2191"} {start} lines above</Text>
       )}
 
       {visible.length === 0 && !running && !streamingText && (
@@ -181,36 +219,15 @@ function TranscriptView({
           <Text dimColor>Welcome to Alpha! Type a prompt to begin.</Text>
           <Text dimColor> </Text>
           <Text dimColor>Commands: /help /model /thinking /compact /quit</Text>
-          <Text dimColor>Streaming: Enter/Ctrl+O toggle tools/Esc cancel/Ctrl+D quit</Text>
+          <Text dimColor>Streaming: Up/Dn scroll | Esc cancel | Ctrl+D quit</Text>
         </Box>
       )}
 
-      {visible.map((item) => {
-        if (item.role === "thinking" && !showThinking) return null;
-        const color = roleColor(item.role);
-        const icon = roleIcon(item.role);
-        const dim = item.role === "thinking" || item.role === "tool" || item.role === "status";
-
-        return (
-          <Box key={item.id} flexDirection="column">
-            {item.text.split("\n").map((line, li) => (
-              <Text key={li} color={color} dimColor={dim}>
-                {icon} {truncate(line, maxLen)}
-              </Text>
-            ))}
-          </Box>
-        );
-      })}
-
-      {streamingText && (
-        <Box flexDirection="column">
-          {streamingText.split("\n").map((line, li) => (
-            <Text key={li} color="green">
-              {"\u2190"} {truncate(line, maxLen)}
-            </Text>
-          ))}
-        </Box>
-      )}
+      {visible.map((line) => (
+        <Text key={line.key} color={line.color} dimColor={line.dim}>
+          {line.text}
+        </Text>
+      ))}
 
       {running && !streamingText && items[items.length - 1]?.role !== "tool" && (
         <Box>
@@ -219,7 +236,7 @@ function TranscriptView({
       )}
 
       {hasBelow && (
-        <Text dimColor>{"\u2193"} {filtered.length - scrollOffset - height} lines below</Text>
+        <Text dimColor>{"\u2193"} {allLines.length - start - height} lines below</Text>
       )}
     </Box>
   );
@@ -235,43 +252,17 @@ function PromptInput({
   onSubmit,
   running,
   isSlashCommand,
-  onScrollUp,
-  onScrollDown,
-  onScrollToBottom,
 }: {
   value: string;
   onChange: (v: string) => void;
   onSubmit: () => void;
   running: boolean;
   isSlashCommand: boolean;
-  onScrollUp: (lines?: number) => void;
-  onScrollDown: (lines?: number) => void;
-  onScrollToBottom: () => void;
 }) {
   useInput(
     (input, key) => {
       if (key.return) {
         onSubmit();
-        return;
-      }
-
-      if (key.upArrow) {
-        onScrollUp(SCROLL_TICK);
-        return;
-      }
-
-      if (key.downArrow) {
-        onScrollDown(SCROLL_TICK);
-        return;
-      }
-
-      if (key.pageUp) {
-        onScrollUp(10);
-        return;
-      }
-
-      if (key.pageDown) {
-        onScrollDown(10);
         return;
       }
 
@@ -323,10 +314,15 @@ function AlphaTuiApp() {
   const transcriptHeight = Math.max(5, termHeight - 6);
 
   const state = stateRef.current;
-  const scroll = useScroll(
-    state.items.length + (streamBuf.displayText ? 1 : 0),
-    transcriptHeight,
+
+  const allLines = buildDisplayLines(
+    state.items,
+    streamBuf.displayText,
+    state.showThinking,
+    Math.max(10, (process.stdout.columns ?? 80) - 4),
   );
+
+  const scroll = useScroll(allLines.length, transcriptHeight);
 
   // Sync header info from session
   useEffect(() => {
@@ -350,6 +346,26 @@ function AlphaTuiApp() {
 
       if (key.ctrl && (input === "c" || input === "d")) {
         exit();
+        return;
+      }
+
+      if (key.upArrow) {
+        scroll.scrollUp(SCROLL_TICK);
+        return;
+      }
+
+      if (key.downArrow) {
+        scroll.scrollDown(SCROLL_TICK);
+        return;
+      }
+
+      if (key.pageUp) {
+        scroll.scrollUp(10);
+        return;
+      }
+
+      if (key.pageDown) {
+        scroll.scrollDown(10);
         return;
       }
     },
@@ -537,7 +553,7 @@ function AlphaTuiApp() {
         streamingText={streamBuf.displayText}
         running={state.running}
         showThinking={state.showThinking}
-        scrollOffset={scroll.scrollOffset}
+        start={scroll.start}
         height={transcriptHeight}
       />
 
@@ -549,9 +565,6 @@ function AlphaTuiApp() {
         onSubmit={handleSubmit}
         running={state.running}
         isSlashCommand={input.startsWith("/")}
-        onScrollUp={scroll.scrollUp}
-        onScrollDown={scroll.scrollDown}
-        onScrollToBottom={scroll.scrollToBottom}
       />
 
       <Box paddingX={1} flexDirection="row" justifyContent="space-between">
