@@ -13,6 +13,7 @@ import { CodingSession, type CodingSessionConfig } from "../session.ts";
 import { createProvider } from "../provider.ts";
 import { getAlphaPaths, projectSessionDir } from "../config/paths.ts";
 import { createCodingTools } from "../tools/types.ts";
+import { SessionManager } from "../session-manager.ts";
 import type { AgentEvent, ToolCall, AgentToolResult } from "@alpha/agent";
 import { TuiState, type ChatItem } from "./state.ts";
 import { useStreamingBuffer } from "./hooks.ts";
@@ -42,7 +43,7 @@ function useScroll(lineCount: number, viewportHeight: number) {
   return { start, scrollUp, scrollDown, scrollToBottom };
 }
 
-function useSession() {
+function useSession(opts?: TuiOptions) {
   const sessionRef = useRef<CodingSession | null>(null);
   const [ready, setReady] = useState(false);
   const [providerName, setProviderName] = useState("loading");
@@ -55,8 +56,25 @@ function useSession() {
         const paths = getAlphaPaths();
         const cwd = process.cwd();
         const dir = projectSessionDir(cwd, paths);
-        const fileName = FsSessionStorage.sessionFileName(cwd);
-        const sessionPath = `${dir}/${fileName}`;
+
+        let sessionPath: string;
+        let sessionId: string | undefined;
+
+        if (opts?.resume) {
+          const manager = new SessionManager(paths);
+          const latest = manager.latestSessionForCwd(cwd);
+          if (latest) {
+            sessionPath = latest.path;
+            sessionId = latest.id;
+          } else {
+            const fileName = FsSessionStorage.sessionFileName(cwd);
+            sessionPath = `${dir}/${fileName}`;
+          }
+        } else {
+          const fileName = FsSessionStorage.sessionFileName(cwd);
+          sessionPath = `${dir}/${fileName}`;
+        }
+
         const storage = new FsSessionStorage(sessionPath);
         await storage.ensureHeader(cwd);
 
@@ -69,6 +87,8 @@ function useSession() {
           tools,
           storage,
           providerName: resolvedName,
+          sessionId,
+          sessionManager: new SessionManager(paths),
         };
         const session = await CodingSession.load(config);
         sessionRef.current = session;
@@ -275,7 +295,7 @@ function PromptInput({
         onChange(value + input);
       }
     },
-    { isActive: !running },
+    { isActive: true },
   );
 
   const color = isSlashCommand ? "yellow" : "green";
@@ -283,7 +303,7 @@ function PromptInput({
   return (
     <Box paddingX={1}>
       <Text color={color} bold>
-        {isSlashCommand ? "/" : "\u03c4"}
+        {isSlashCommand ? "/" : running ? "\u25b6" : "\u03c4"}
         {" "}
       </Text>
       <Text>{value}</Text>
@@ -296,8 +316,8 @@ function PromptInput({
 // Main app
 // ---------------------------------------------------------------------------
 
-function AlphaTuiApp() {
-  const { session, ready, providerName, modelName } = useSession();
+function AlphaTuiApp({ options }: { options?: TuiOptions }) {
+  const { session, ready, providerName, modelName } = useSession(options);
   const { exit } = useApp();
   const forceUpdate = useForceUpdate();
 
@@ -349,6 +369,14 @@ function AlphaTuiApp() {
         return;
       }
 
+      if (key.tab && session) {
+        const newLevel = session.cycleThinkingLevel();
+        setThinkingLevel(newLevel);
+        state.addStatus(`Thinking: ${newLevel}`);
+        forceUpdate();
+        return;
+      }
+
       if (key.upArrow) {
         scroll.scrollUp(SCROLL_TICK);
         return;
@@ -378,6 +406,19 @@ function AlphaTuiApp() {
     if (!text || !session) return;
     setInput("");
 
+    // Steer when session is already running
+    if (session.isRunning) {
+      state.addStatus(`Steering: ${text.slice(0, 60)}`);
+      forceUpdate();
+      try {
+        await session.prompt(text, "steer");
+      } catch (err) {
+        state.addError(String(err));
+        forceUpdate();
+      }
+      return;
+    }
+
     // Slash commands
     if (text.startsWith("/")) {
       const result = session.handleCommand(text);
@@ -388,7 +429,7 @@ function AlphaTuiApp() {
           setTimeout(() => exit(), 300);
           return;
         }
-        if (result.newSessionRequested) {
+        if (result.newSessionRequested || result.clearRequested) {
           state.clear();
           await session.newSession();
           state.addStatus("Started new session.");
@@ -406,6 +447,82 @@ function AlphaTuiApp() {
           await session.compact(result.compactSummary);
           state.addStatus("Compacted context.");
           setTokenCount(session.contextTokenEstimate);
+          forceUpdate();
+          return;
+        }
+        if (result.modelPickerRequested) {
+          const models = session.availableModels;
+          const lines = ["Available models:"];
+          for (const m of models) {
+            const marker = m === session.model ? " *" : "  ";
+            lines.push(`${marker} ${m}`);
+          }
+          lines.push("", "Use /model <name> to switch or type a model name.");
+          state.addStatus(lines.join("\n"));
+          forceUpdate();
+          return;
+        }
+        if (result.resumePickerRequested) {
+          state.addStatus("Use /sessions to list saved sessions, then /resume <id> to resume one.");
+          forceUpdate();
+          return;
+        }
+        if (result.resumeSessionId) {
+          try {
+            await session.resume(result.resumeSessionId);
+            state.clear();
+            state.addStatus(`Resumed session: ${result.resumeSessionId.slice(0, 16)}`);
+          } catch (err) {
+            state.addError(String(err));
+          }
+          forceUpdate();
+          return;
+        }
+        if (result.treePickerRequested) {
+          try {
+            const choices = await session.treeChoices();
+            const lines = ["Branch points:"];
+            for (const c of choices) {
+              lines.push(c.active ? `  * ${c.label}` : `    ${c.label}`);
+            }
+            lines.push("", "Use /tree <entryId> or /branch <entryId> to branch.");
+            state.addStatus(lines.join("\n"));
+          } catch (err) {
+            state.addError(String(err));
+          }
+          forceUpdate();
+          return;
+        }
+        if (result.loginPickerRequested || result.loginProvider) {
+          state.addStatus(
+            "To log in, set the appropriate API key environment variable\n" +
+            "(e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY, OPENROUTER_API_KEY)\n" +
+            "or run: alpha setup",
+          );
+          forceUpdate();
+          return;
+        }
+        if (result.logoutPickerRequested || result.logoutProvider) {
+          state.addStatus(
+            "To remove credentials, delete the entry from\n" +
+            "~/.alpha/credentials.json or unset the API key env var.",
+          );
+          forceUpdate();
+          return;
+        }
+        if (result.themePickerRequested || result.theme) {
+          state.addStatus("Theme switching is not yet available in the TUI.");
+          forceUpdate();
+          return;
+        }
+        if (result.scopedModelsPickerRequested) {
+          state.addStatus("Scoped models configuration is not yet available in the TUI.");
+          forceUpdate();
+          return;
+        }
+        if (result.exportRequested) {
+          const msg = await session.applyCommandResult(result);
+          if (msg) state.addStatus(msg);
           forceUpdate();
           return;
         }
@@ -585,13 +702,17 @@ function AlphaTuiApp() {
 // Entry point
 // ---------------------------------------------------------------------------
 
-export function runTuiApp(): void {
+export interface TuiOptions {
+  resume?: boolean;
+}
+
+export function runTuiApp(opts?: TuiOptions): void {
   if (!process.stdin.isTTY) {
     console.log("Alpha TUI requires an interactive terminal. Use -p for print mode.");
     console.log("  alpha -p 'your prompt'");
     process.exit(1);
   }
-  render(React.createElement(AlphaTuiApp));
+  render(React.createElement(AlphaTuiApp, { options: opts }));
 }
 
 if (import.meta.main) {

@@ -41,6 +41,7 @@ import { type ContextUsageEstimate, estimateContextTokens } from "./context/toke
 import {
   recentPreservingCompactionPlan,
   summarizeMessagesForCompaction,
+  buildCompactionPrompt,
 } from "./context/compaction.ts";
 import { buildSystemPrompt } from "./prompt/system.ts";
 import type { ThinkingLevel } from "./thinking.ts";
@@ -179,21 +180,24 @@ export interface ScopedModelConfig {
 // ---------------------------------------------------------------------------
 
 export interface SessionManager {
-  getSession(id: string): SessionRecord | null;
+  getSession(id: string): SessionRecord | undefined;
   createSession(cwd: string, model: string, providerName?: string): SessionRecord;
-  touchSession(id: string, opts?: { model?: string; providerName?: string; title?: string }): SessionRecord | null;
+  touchSession(id: string, opts?: { model?: string; providerName?: string; title?: string }): SessionRecord | null | undefined;
   listSessions(cwd?: string): SessionRecord[];
+  latestSessionForCwd?(cwd: string): SessionRecord | undefined;
 }
 
 export interface SessionRecord {
   id: string;
   cwd: string;
-  model: string;
+  model?: string;
   providerName?: string;
   title?: string;
   path: string;
   createdAt: number;
   updatedAt: number;
+  name?: string;
+  messageCount?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -757,6 +761,34 @@ export class CodingSession implements CommandSession {
   }
 
   private async _generateCompactionSummary(messages: AgentMessage[], instructions?: string): Promise<string> {
+    try {
+      const prompt = buildCompactionPrompt(messages, instructions);
+      const system = "You are a conversation summarizer. Summarize the conversation accurately and concisely following the requested format.";
+
+      const response = this._config.provider.streamResponse({
+        model: this._model,
+        system,
+        messages: [{ role: "user", content: prompt }],
+        tools: [],
+      });
+
+      let summary = "";
+      for await (const event of response) {
+        if (event.type === "text_delta") {
+          summary += event.text;
+        }
+        if (event.type === "error") {
+          break;
+        }
+      }
+
+      if (summary.trim()) {
+        return summary;
+      }
+    } catch {
+      // Fall through to deterministic fallback
+    }
+
     return summarizeMessagesForCompaction(messages, instructions);
   }
 

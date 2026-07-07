@@ -95,7 +95,7 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
 
   // Default: Start TUI
   const { runTuiApp } = await import("./tui/app.tsx");
-  await runTuiApp();
+  await runTuiApp({ resume: parsed.newSession ? false : parsed.resume });
 }
 
 // ---------------------------------------------------------------------------

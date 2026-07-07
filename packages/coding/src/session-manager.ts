@@ -43,6 +43,38 @@ export class SessionManager {
     return this.listSessions(cwd)[0];
   }
 
+  createSession(cwd: string, model: string, providerName?: string): SessionRecord {
+    const dir = projectSessionDir(cwd, this._paths);
+    const fileName = FsSessionStorage.sessionFileName(cwd);
+    const path = `${dir}/${fileName}`;
+    const now = Date.now();
+
+    return {
+      id: fileName.split("_")[1]?.replace(".jsonl", "") ?? "",
+      cwd,
+      path,
+      model,
+      providerName,
+      createdAt: now,
+      updatedAt: now,
+      messageCount: 0,
+    };
+  }
+
+  touchSession(id: string, opts?: { model?: string; providerName?: string; title?: string }): SessionRecord | null {
+    const record = this.getSession(id);
+    if (!record) return null;
+
+    const updated: SessionRecord = {
+      ...record,
+      updatedAt: Date.now(),
+      model: opts?.model ?? record.model,
+      providerName: opts?.providerName ?? record.providerName,
+      name: opts?.title ?? record.name,
+    };
+    return updated;
+  }
+
   private _readProjectSessions(cwd: string): SessionRecord[] {
     const sessionDir = projectSessionDir(cwd, this._paths);
     return this._scanSessionDir(sessionDir);
