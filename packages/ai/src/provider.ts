@@ -1,5 +1,6 @@
-import type { AgentMessage, AgentTool } from "@alpha/agent";
+import type { AgentTool } from "@alpha/agent";
 import type { ProviderEvent } from "./events.ts";
+import type { AgentMessage } from "./messages.ts";
 
 // ---------------------------------------------------------------------------
 // CancellationToken — compatible with the agent's version

@@ -1,5 +1,5 @@
 import { z } from "zod/v4";
-import { AssistantMessageSchema, ToolCallSchema } from "@alpha/agent";
+import { AssistantMessageSchema, ToolCallSchema } from "./messages.ts";
 
 // ---------------------------------------------------------------------------
 // FinishReason — why the provider stopped streaming

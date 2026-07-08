@@ -152,53 +152,17 @@ export interface ResourcePaths {
   contextFiles?: string[];
 }
 
-// ---------------------------------------------------------------------------
-// Provider settings (simplified)
-// ---------------------------------------------------------------------------
+import {
+  type ProviderSettings,
+  type ProviderConfig,
+  type ScopedModelConfig,
+} from "./config/providers.ts";
+import { type SessionRecord } from "./session-manager.ts";
+import { SessionManager } from "./session-manager.ts";
 
-export interface ProviderSettings {
-  defaultProvider: string;
-  providers: ProviderConfig[];
-  scopedModels: ScopedModelConfig[];
-}
-
-export interface ProviderConfig {
-  name: string;
-  models: string[];
-  defaultModel: string;
-  thinkingLevels?: ThinkingLevel[];
-  thinkingModels?: string[];
-}
-
-export interface ScopedModelConfig {
-  provider: string;
-  model: string;
-}
-
-// ---------------------------------------------------------------------------
-// Session manager (simplified)
-// ---------------------------------------------------------------------------
-
-export interface SessionManager {
-  getSession(id: string): SessionRecord | undefined;
-  createSession(cwd: string, model: string, providerName?: string): SessionRecord;
-  touchSession(id: string, opts?: { model?: string; providerName?: string; title?: string }): SessionRecord | null | undefined;
-  listSessions(cwd?: string): SessionRecord[];
-  latestSessionForCwd?(cwd: string): SessionRecord | undefined;
-}
-
-export interface SessionRecord {
-  id: string;
-  cwd: string;
-  model?: string;
-  providerName?: string;
-  title?: string;
-  path: string;
-  createdAt: number;
-  updatedAt: number;
-  name?: string;
-  messageCount?: number;
-}
+export type { ProviderSettings, ProviderConfig, ScopedModelConfig };
+export { SessionManager };
+export type { SessionRecord };
 
 // ---------------------------------------------------------------------------
 // BranchChoice (legacy compatibility)
@@ -442,7 +406,9 @@ export class CodingSession implements CommandSession {
     this._appendEntry({
       type: "model_change", id: newEntryId(), parentId: this._lastParentId,
       timestamp: currentTimestamp(), model,
-    }).catch(() => {});
+    }).catch((err) => {
+      console.error("[alpha] Failed to persist model_change:", err);
+    });
   }
 
   async setProvider(providerName: string): Promise<void> {
@@ -715,8 +681,12 @@ export class CodingSession implements CommandSession {
     };
 
     // Append to storage and local cache
-    this._storage.append(msgEntry).catch(() => {});
-    this._storage.append(leafEntry).catch(() => {});
+    this._storage.append(msgEntry).catch((err) => {
+      console.error("[alpha] Failed to persist message entry:", err);
+    });
+    this._storage.append(leafEntry).catch((err) => {
+      console.error("[alpha] Failed to persist leaf entry:", err);
+    });
     this._allEntries.push(msgEntry);
     this._allEntries.push(leafEntry);
     this._lastParentId = leafEntry.id;
@@ -785,7 +755,8 @@ export class CodingSession implements CommandSession {
       if (summary.trim()) {
         return summary;
       }
-    } catch {
+    } catch (err) {
+      console.error("[alpha] LLM compaction failed, using deterministic fallback:", err);
       // Fall through to deterministic fallback
     }
 

@@ -124,7 +124,8 @@ export class FsSessionStorage implements SessionStorage {
     let header: SessionHeader;
     try {
       header = SessionHeaderSchema.parse(JSON.parse(lines[0]!));
-    } catch {
+    } catch (err) {
+      console.error("[alpha] FsSessionStorage: corrupt session header:", err);
       return null;
     }
 
@@ -145,7 +146,9 @@ export class FsSessionStorage implements SessionStorage {
         if (parsed.type === "session_info" && parsed.name) {
           name = parsed.name;
         }
-      } catch {}
+      } catch (err) {
+        console.error("[alpha] FsSessionStorage: failed to parse metadata line:", err);
+      }
     }
 
     return {

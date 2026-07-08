@@ -19,6 +19,8 @@ import {
   anthropicThinkingBudgetForLevel,
 } from "../thinking.ts";
 import { providerThinkingLevels } from "./providers.ts";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
 // ClosableModelProvider
@@ -392,8 +394,8 @@ export class ProviderConfigError extends Error {
 // ---------------------------------------------------------------------------
 
 function getCredentialsPath(): string {
-  const home = process.env.ALPHA_HOME ?? require("node:os").homedir();
-  return require("node:path").join(home, ".alpha", "credentials.json");
+  const home = process.env.ALPHA_HOME ?? homedir();
+  return join(home, ".alpha", "credentials.json");
 }
 
 export function getProviderFromConfig(

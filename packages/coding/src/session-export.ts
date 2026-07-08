@@ -5,6 +5,8 @@
  */
 
 import type { SessionEntry, AgentMessage, ToolCall } from "@alpha/agent";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join, basename } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -34,11 +36,8 @@ export function exportSessionJsonl(entries: SessionEntry[], outputPath: string):
   const lines = entries.map((e) => JSON.stringify(e));
   const content = lines.join("\n") + (lines.length > 0 ? "\n" : "");
 
-  // Write to file
-  const fs = require("node:fs");
-  const path = require("node:path");
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  fs.writeFileSync(outputPath, content, "utf-8");
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, content, "utf-8");
 
   return outputPath;
 }
@@ -53,11 +52,8 @@ export function exportSessionHtml(
 
   const html = renderSessionHtml(entries, { title, source });
 
-  // Write to file
-  const fs = require("node:fs");
-  const path = require("node:path");
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  fs.writeFileSync(outputPath, html, "utf-8");
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, html, "utf-8");
 
   return outputPath;
 }

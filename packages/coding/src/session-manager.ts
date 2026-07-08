@@ -1,8 +1,8 @@
 import { readdirSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join, dirname, basename } from "node:path";
+import { join } from "node:path";
 import type { AlphaPaths } from "./config/paths.ts";
 import { getAlphaPaths, projectSessionDir } from "./config/paths.ts";
-import { FsSessionStorage, type SessionMetadata } from "@alpha/agent";
+import { FsSessionStorage } from "@alpha/agent";
 
 export interface SessionRecord {
   id: string;
@@ -93,7 +93,9 @@ export class SessionManager {
         const projectDir = join(sessionsDir, entry.name);
         records.push(...this._scanSessionDir(projectDir));
       }
-    } catch {}
+    } catch (err) {
+      console.error("[alpha] SessionManager: failed to scan sessions:", err);
+    }
 
     return this._deduplicate(records);
   }
@@ -112,7 +114,9 @@ export class SessionManager {
           records.push(metadata);
         }
       }
-    } catch {}
+    } catch (err) {
+      console.error("[alpha] SessionManager: failed to scan session dir:", err);
+    }
 
     return records;
   }
@@ -142,7 +146,9 @@ export class SessionManager {
           if (parsed.type === "session_info" && parsed.name) {
             name = parsed.name;
           }
-        } catch {}
+        } catch (err) {
+          console.error("[alpha] SessionManager: failed to parse session line:", err);
+        }
       }
 
       return {

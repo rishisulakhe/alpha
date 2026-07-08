@@ -79,12 +79,14 @@ export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 // ProviderSettings
 // ---------------------------------------------------------------------------
 
+export const ScopedModelConfigSchema = z.strictObject({ provider: z.string(), model: z.string() });
+
+export type ScopedModelConfig = z.infer<typeof ScopedModelConfigSchema>;
+
 export const ProviderSettingsSchema = z.strictObject({
   defaultProvider: z.string(),
   providers: z.array(ProviderConfigSchema),
-  scopedModels: z.array(
-    z.strictObject({ provider: z.string(), model: z.string() }),
-  ).default([]),
+  scopedModels: z.array(ScopedModelConfigSchema).default([]),
 });
 
 export type ProviderSettings = z.infer<typeof ProviderSettingsSchema>;

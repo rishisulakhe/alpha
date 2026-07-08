@@ -11,17 +11,18 @@
     ".": "./src/index.ts",
     "./provider": "./src/provider.ts",
     "./events": "./src/events.ts",
+    "./messages": "./src/messages.ts",
     "./fake": "./src/fake.ts",
     "./retry": "./src/retry.ts",
     "./providers/openai-compatible": "./src/providers/openai-compatible.ts",
     "./providers/anthropic": "./src/providers/anthropic.ts"
   },
   "devDependencies": {
+    "@alpha/agent": "workspace:*",
     "@types/bun": "latest",
     "typescript": "^5"
   },
   "dependencies": {
-    "@alpha/agent": "workspace:*",
     "zod": "^4.4.3"
   }
 }

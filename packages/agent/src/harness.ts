@@ -219,12 +219,12 @@ export class AgentHarness {
       try {
         const result = listener(event);
         if (result instanceof Promise) {
-          result.catch(() => {
-            // Listener errors must not break the harness
+          result.catch((err) => {
+            console.error("[alpha] Listener error (async):", err);
           });
         }
-      } catch {
-        // Listener errors must not break the harness
+      } catch (err) {
+        console.error("[alpha] Listener error (sync):", err);
       }
     }
   }
@@ -233,8 +233,8 @@ export class AgentHarness {
     for (const listener of [...this._listeners]) {
       try {
         await listener(event);
-      } catch {
-        // Listener errors must not break the harness
+      } catch (err) {
+        console.error("[alpha] Listener error (notifyAwait):", err);
       }
     }
   }
