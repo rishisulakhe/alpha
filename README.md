@@ -1,7 +1,5 @@
 # Alpha
 
-[![CI](https://github.com/rishisulakhe/alpha/actions/workflows/ci.yml/badge.svg)](https://github.com/rishisulakhe/alpha/actions/workflows/ci.yml)
-
 A minimal coding agent built in TypeScript, inspired by [Pi](https://github.com/earendil-works/pi).
 
 Alpha understands your codebase, runs tools (bash, read/write/edit files), and reports back in a streaming terminal UI.

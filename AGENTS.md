@@ -53,9 +53,12 @@ packages/
 ```bash
 bun test          # Run all packages
 bun test --watch  # Watch mode
+bun run check     # Format + lint + typecheck + test (runs on pre-commit)
 ```
 
 Tests use `bun:test` (Jest-compatible). Provider tests use `FakeProvider` to avoid network calls. Session storage tests use `InMemorySessionStorage`.
+
+Pre-commit hooks (via Husky) run Biome formatting on staged files, then full lint + typecheck + tests before every commit.
 
 ## Adding a Provider
 

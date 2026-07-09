@@ -7,10 +7,14 @@
   "scripts": {
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun run --filter '*' test",
-    "lint": "bunx biome check ."
+    "lint": "bunx biome check .",
+    "format": "bunx biome check --write .",
+    "check": "bunx biome check . && bun run typecheck && bun run test",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "husky": "^9.1.7",
     "typescript": "^5"
   }
 }
