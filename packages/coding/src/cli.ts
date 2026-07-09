@@ -6,6 +6,8 @@ import { createProvider, loadProviderSettings, getAlphaPaths, ensureAlphaDirecto
 import { createEventRenderer } from "./rendering/index.ts";
 import { createCodingTools } from "./tools/types.ts";
 import { projectSessionDir } from "./config/paths.ts";
+import { exportSessionArtifact, normalizeExportFormat } from "./session-export.ts";
+import { entriesFromJsonLines } from "@alpha/agent";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -173,32 +175,64 @@ function handleProviders(): void {
 }
 
 async function handleExport(args: string[]): Promise<void> {
-  // Parse arguments
   let format: string | undefined;
+  let source: string | undefined;
   let destination: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
-    if (arg === "--format" && i + 1 < args.length) {
+    if ((arg === "--format" || arg === "-f") && i + 1 < args.length) {
       format = args[++i];
     } else if (arg.startsWith("--format=")) {
       format = arg.split("=")[1];
+    } else if (arg.startsWith("--source=")) {
+      source = arg.split("=")[1];
     } else if (!arg.startsWith("-")) {
-      destination = arg;
+      if (!destination) destination = arg;
+      else source = arg;
     }
   }
 
-  // For now, just show a message - full export would require a session
-  if (destination) {
-    console.log(`Export would write to: ${destination}`);
-    console.log(`Format: ${format ?? "html"}`);
-    console.log("(Full export requires an active session)");
-  } else {
-    console.log("Usage: alpha export [destination] [--format html|jsonl]");
+  if (!destination) {
+    console.log("Usage: alpha export <destination> [--source <session.jsonl>] [--format html|jsonl]");
     console.log("");
     console.log("Examples:");
     console.log("  alpha export session.html");
     console.log("  alpha export --format jsonl session.jsonl");
+    console.log("  alpha export --source ~/.alpha/sessions/--myproject--/session.jsonl results.html");
+    return;
+  }
+
+  try {
+    const cwd = process.cwd();
+    const paths = getAlphaPaths();
+
+    let sessionPath: string;
+    if (source) {
+      sessionPath = source;
+    } else {
+      const manager = new SessionManager(paths);
+      const latest = manager.latestSessionForCwd(cwd);
+      if (!latest) {
+        console.error("No sessions found. Run Alpha first to create one, or use --source.");
+        process.exit(1);
+      }
+      sessionPath = latest.path;
+    }
+
+    const exportFormat = normalizeExportFormat(format);
+    const outFile = destination.endsWith(`.${exportFormat}`)
+      ? destination
+      : `${destination}.${exportFormat}`;
+
+    const storage = new FsSessionStorage(sessionPath);
+    const entries = await storage.readAll();
+    const outputPath = exportSessionArtifact(entries, outFile, { format: exportFormat });
+
+    console.log(`Exported session to: ${outputPath}`);
+  } catch (err) {
+    console.error("Export failed:", err instanceof Error ? err.message : String(err));
+    process.exit(1);
   }
 }
 

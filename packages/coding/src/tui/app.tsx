@@ -18,6 +18,7 @@ import type { AgentEvent, ToolCall, AgentToolResult } from "@alpha/agent";
 import { TuiState, type ChatItem } from "./state.ts";
 import { useStreamingBuffer } from "./hooks.ts";
 import { CompactInfoBar, ActivityIndicator } from "./sidebar.tsx";
+import { ErrorBoundary } from "./error-boundary.tsx";
 
 const SCROLL_TICK = 3;
 
@@ -377,6 +378,20 @@ function AlphaTuiApp({ options }: { options?: TuiOptions }) {
         return;
       }
 
+      if (key.ctrl && input === "t") {
+        const shown = state.toggleThinking();
+        state.addStatus(shown ? "Thinking shown" : "Thinking hidden");
+        forceUpdate();
+        return;
+      }
+
+      if (key.ctrl && input === "o") {
+        const shown = state.toggleToolResults();
+        state.addStatus(shown ? "Tool results shown" : "Tool results collapsed");
+        forceUpdate();
+        return;
+      }
+
       if (key.upArrow) {
         scroll.scrollUp(SCROLL_TICK);
         return;
@@ -712,7 +727,13 @@ export function runTuiApp(opts?: TuiOptions): void {
     console.log("  alpha -p 'your prompt'");
     process.exit(1);
   }
-  render(React.createElement(AlphaTuiApp, { options: opts }));
+  render(
+    React.createElement(
+      ErrorBoundary,
+      null,
+      React.createElement(AlphaTuiApp, { options: opts }),
+    ),
+  );
 }
 
 if (import.meta.main) {

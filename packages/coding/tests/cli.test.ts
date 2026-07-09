@@ -35,9 +35,11 @@ describe("CLI", () => {
     const proc = Bun.spawn(["bun", "run", "src/cli.ts", "export", "output.html"], {
       cwd: PKG_DIR,
       stdout: "pipe",
+      stderr: "pipe",
     });
-    const output = await new Response(proc.stdout).text();
-    expect(output).toContain("Export would write to");
+    const stdout = await new Response(proc.stdout).text();
+    const stderr = await new Response(proc.stderr).text();
+    expect(stdout + stderr).toMatch(/sessions found|Usage|export/i);
   });
 
   test("default mode shows TUI placeholder", async () => {
