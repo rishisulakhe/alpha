@@ -4,12 +4,17 @@ import { HeaderBar } from "./components/HeaderBar.tsx";
 import { TranscriptView } from "./components/TranscriptView.tsx";
 import { StatusLine } from "./components/StatusLine.tsx";
 import { Footer } from "./components/Footer.tsx";
+import { useAgentStream } from "./hooks/useAgentStream.ts";
+import { fakeAgentEvents } from "./scripts/fakeEvents.ts";
 
 export function App() {
   const renderer = useRenderer();
-  const { height } = useTerminalDimensions();
+  const { height, width } = useTerminalDimensions();
+  const { state, running, activity, processEvents } = useAgentStream();
   const [input, setInput] = useState("");
-  const [running, setRunning] = useState(false);
+  const [tokenCount, setTokenCount] = useState(0);
+  const [thinkingLevel, setThinkingLevel] = useState("medium");
+  const [showThinking, setShowThinking] = useState(true);
 
   useKeyboard((key) => {
     if (key.name === "escape") {
@@ -18,6 +23,19 @@ export function App() {
     }
     if (key.ctrl && key.name === "d") {
       renderer.destroy();
+      return;
+    }
+    if (key.ctrl && key.name === "t") {
+      setShowThinking((s) => !s);
+      return;
+    }
+    if (key.name === "return") {
+      if (!running) {
+        processEvents(fakeAgentEvents());
+        setTokenCount(45000);
+        setThinkingLevel("medium");
+      }
+      return;
     }
   });
 
@@ -26,14 +44,19 @@ export function App() {
       <HeaderBar
         provider="openai"
         model="gpt-4.1"
-        tokens={42500}
+        tokens={tokenCount}
         maxTokens={200000}
-        thinking="medium"
+        thinking={thinkingLevel}
       />
 
-      <TranscriptView />
+      <TranscriptView
+        items={state.items}
+        assistantBuffer={state.assistantBuffer}
+        running={running}
+        showThinking={showThinking}
+      />
 
-      <StatusLine activity={running ? "Working..." : ""} running={running} />
+      <StatusLine activity={activity} running={running} />
 
       <box border paddingLeft={1} paddingRight={1} minHeight={3}>
         <text>
@@ -43,8 +66,8 @@ export function App() {
       </box>
 
       <Footer
-        left="Enter send \u00b7 Shift+Enter newline \u00b7 Esc exit"
-        right={`${height}x${renderer.width} \u00b7 tokens: ~42.5k`}
+        left={`Enter run demo \u00b7 Ctrl+T toggle thinking \u00b7 Esc exit`}
+        right={`${height}x${width} \u00b7 tokens: ~${tokenCount ? (tokenCount / 1000).toFixed(1) + "k" : "0"}`}
       />
     </box>
   );
