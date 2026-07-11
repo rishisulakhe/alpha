@@ -16,13 +16,36 @@ export function TranscriptView({
 
   return (
     <scrollbox flexGrow={1}>
-      <box flexDirection="column" paddingLeft={1} paddingRight={1} paddingTop={1}>
+      <box flexDirection="column" paddingLeft={1} paddingRight={1} paddingTop={1} backgroundColor="#0d0d1a">
         {filtered.length === 0 && !running && !assistantBuffer && (
-          <text>
-            <span fg="#666666">
-              Welcome to Alpha! Type a prompt to begin, or press Enter to run the demo.
-            </span>
-          </text>
+          <box flexDirection="column">
+            <text>
+              <span fg="#585d6b">Welcome to </span>
+              <span fg="#7c8aff"><strong>Alpha</strong></span>
+              <span fg="#585d6b"> — your coding agent</span>
+            </text>
+            <text />
+            <text>
+              <span fg="#454b7a">  Enter</span>
+              <span fg="#585d6b"> to run the demo</span>
+            </text>
+            <text>
+              <span fg="#454b7a">  /</span>
+              <span fg="#585d6b"> for slash commands</span>
+            </text>
+            <text>
+              <span fg="#454b7a">  Ctrl+T</span>
+              <span fg="#585d6b"> toggle thinking</span>
+            </text>
+            <text>
+              <span fg="#454b7a">  Tab</span>
+              <span fg="#585d6b"> cycle thinking level</span>
+            </text>
+            <text>
+              <span fg="#454b7a">  Esc</span>
+              <span fg="#585d6b"> to exit</span>
+            </text>
+          </box>
         )}
 
         {filtered.map((item) => (
@@ -39,7 +62,7 @@ export function TranscriptView({
 
         {running && !assistantBuffer && (
           <text>
-            <span fg="#666666">· Working...</span>
+            <span fg="#454b7a">Working...</span>
           </text>
         )}
       </box>

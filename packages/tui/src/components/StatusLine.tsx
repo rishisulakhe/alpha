@@ -13,16 +13,16 @@ export function StatusLine({ activity, running }: { activity: string; running: b
     return () => clearInterval(interval);
   }, [running]);
 
-  if (!running && !activity) {
-    return <text />;
-  }
-
   return (
-    <box height={1}>
-      <text>
-        {running && <span fg="#00d7ff">{SPINNER_FRAMES[frame]} </span>}
-        <span fg="#888888">{activity}</span>
-      </text>
+    <box height={1} paddingLeft={1} backgroundColor="#0d0d1a">
+      {running || activity ? (
+        <text>
+          {running && <span fg="#7c8aff">{SPINNER_FRAMES[frame]} </span>}
+          <span fg="#585d6b">{activity}</span>
+        </text>
+      ) : (
+        <text />
+      )}
     </box>
   );
 }
